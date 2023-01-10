@@ -24,15 +24,30 @@ contains
       ! Create a grid from input params
       create_grid: block
          use sgrid_class, only: cartesian
-         integer :: i,j,k,nx,ny,nz
-         real(WP) :: Lx,Ly,Lz
+         integer :: i,j,k,nx,ny,nz,no
+         real(WP) :: Lx,Ly,Lz,D,dx
          real(WP), dimension(:), allocatable :: x,y,z
          
          ! Read in grid definition
-         call param_read('Lx',Lx); call param_read('nx',nx); allocate(x(nx+1))
-         call param_read('Ly',Ly); call param_read('ny',ny); allocate(y(ny+1))
-         call param_read('Lz',Lz); call param_read('nz',nz); allocate(z(nz+1))
-         
+         call param_read('Pipe length',Lx)
+         call param_read('Pipe diameter',D)
+         call param_read('ny',ny); allocate(y(ny+1))
+         call param_read('nx',nx); allocate(x(nx+1))
+         call param_read('nz',nz); allocate(z(nz+1))
+
+         dx=Lx/real(nx,WP)
+         no=6
+         if (ny.gt.1) then
+            Ly=D+real(2*no,WP)*D/real(ny-2*no,WP)
+         else
+            Ly=dx
+         end if
+         if (nz.gt.1) then
+            Lz=D+real(2*no,WP)*D/real(ny-2*no,WP)
+         else
+            Lz=dx
+         end if
+
          ! Create simple rectilinear grid
          do i=1,nx+1
             x(i)=real(i-1,WP)/real(nx,WP)*Lx
@@ -45,7 +60,7 @@ contains
          end do
          
          ! General serial grid object
-         grid=sgrid(coord=cartesian,no=2,x=x,y=y,z=z,xper=.false.,yper=.true.,zper=.true.,name='FBed')
+         grid=sgrid(coord=cartesian,no=2,x=x,y=y,z=z,xper=.true.,yper=.true.,zper=.true.,name='pipe')
          
       end block create_grid
       
@@ -66,16 +81,7 @@ contains
       
       ! Create masks for this config
       create_walls: block
-        integer :: i,j,k
-        cfg%VF=1.0_WP
-        do k=cfg%kmino_,cfg%kmaxo_
-           do j=cfg%jmino_,cfg%jmaxo_
-              do i=cfg%imino_,cfg%imaxo_
-                 if (cfg%xm(i).lt.0.0_WP) cfg%VF(i,j,k)=0.0_WP
-                 if (cfg%xm(i).gt.cfg%xL) cfg%VF(i,j,k)=0.0_WP
-              end do
-           end do
-        end do
+         cfg%VF=1.0_WP
       end block create_walls
       
       
