@@ -23,8 +23,8 @@ INCLUDE_LOCATIONS += $(Ulocs)
 VPATH_LOCATIONS   += $(Ulocs)
 
 # Define external libraries - this can also be in .profile
-LAPACK_DIR= /opt/homebrew/Cellar/lapack/
-HYPRE_DIR = /Users/jcaps/Research/Codes/Builds/hypre/
+LAPACK_DIR= /usr/local/Cellar/lapack/3.10.1_1
+HYPRE_DIR = /Users/rgrawe/NGA2hypre
 
 # NGA compilation definitions
 include $(NGA_HOME)/tools/GNUMake/Make.defs

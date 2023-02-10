@@ -2,17 +2,17 @@
 Partition :	1 1 1
 
 # Mesh definition
-Lx :	3200e-6
-Ly :	3200e-6
-Lz :    3200e-6
-nx :	1
-ny :	1
-nz :	1
+Lx :	1600e-6
+Ly :	1600e-6
+Lz :    1600e-6
+nx :	8
+ny :	8
+nz :	8
 
 # Time integration
 Max timestep size :	0.001
 Max cfl number :	   1
-Max time :           10
+Max time :           5
 
 # Fluid properties
 Dynamic viscosity : 1.8e-5

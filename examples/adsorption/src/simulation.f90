@@ -34,6 +34,8 @@ module simulation
   !> Work arrays and fluid properties
   real(WP), dimension(:,:,:), allocatable :: resU,resV,resW
   real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi,dRHOdt
+  real(WP), dimension(:,:,:), allocatable :: srcUlp,srcVlp,srcWlp,rholp
+  real(WP), dimension(:,:,:,:), allocatable :: srcSClp
   real(WP), dimension(:,:,:), allocatable :: resSC,N2_rho
   real(WP) :: visc,rho,diffusivity,CO2mass_init,CO2mass,N2mass,delta_CO2mass,total_mass
 
@@ -55,13 +57,7 @@ contains
     real(WP) :: Wmix_avg,rho_avg,PCO2,PN2
     resSC=1.0_WP/(sc(ind_CO2)%SC/W_CO2+(1.0_WP-sc(ind_CO2)%SC)/W_N2)
     call fs%cfg%integrate(sc(ind_CO2)%rho*sc(ind_T)%sc/resSC,integral=Pthermo)
-    Pthermo=Pthermo*Rcst/fs%cfg%vol_total
-    ! call fs%cfg%integrate(sc(ind_CO2)%rho*sc(ind_T)%sc*sc(ind_CO2)%sc/W_CO2,integral=PCO2)
-    ! PCO2=PCO2*Rcst/fs%cfg%vol_total
-    ! print *,'PCO2',PCO2
-    ! call fs%cfg%integrate(sc(ind_CO2)%rho*sc(ind_T)%sc*(1-sc(ind_CO2)%sc)/W_N2,integral=PN2)
-    ! PN2=PN2*Rcst/fs%cfg%vol_total
-    ! print *,'PN2',PN2    
+    Pthermo=Pthermo*Rcst/fs%cfg%vol_total   
   end subroutine get_Pthermo
   
   !> Define here our equation of state - rho(P,T,Yk)
@@ -180,9 +176,14 @@ contains
       allocate(resV  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(resW  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(resSC (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(srcUlp  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(srcVlp  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(srcWlp  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(srcSClp  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,2))
       allocate(Ui    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(Vi    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(Wi    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(rholp (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
     end block allocate_work_arrays
 
     ! Create scalar solvers for T and CO2
@@ -246,7 +247,8 @@ contains
             ! Give zero velocity
             lp%p(i)%vel=0.0_WP
             ! Give zero collision force
-            lp%p(i)%col=0.0_WP
+            lp%p(i)%Acol=0.0_WP
+            lp%p(i)%Tcol=0.0_WP
             ! Give zero dt
             lp%p(i)%dt=0.0_WP
             ! Locate the particle on the mesh
@@ -260,8 +262,7 @@ contains
       ! Get initial particle volume fraction
       call lp%update_VF()
       ! Set collision timescale
-      call param_read('Collision timescale',lp%Tcol,default=5.0_WP*time%dt)
-      lp%Tcol=5.0_WP*time%dt
+      call param_read('Collision timescale',lp%tau_col,default=5.0_WP*time%dt)
       ! Set coefficient of restitution
       call param_read('Coefficient of restitution',lp%e_n)
       ! Set gravity
@@ -272,13 +273,17 @@ contains
     ! Create partmesh object for Lagrangian particle output
     create_pmesh: block
       integer :: i
-      pmesh=partmesh(nvar=2,name='lpt')
+      pmesh=partmesh(nvar=1,nvec=3,name='lpt')
       pmesh%varname(1)='diameter'
-      pmesh%varname(2)='Mc'
+      pmesh%vecname(1)='velocity'
+      pmesh%vecname(2)='ang_vel'
+      pmesh%vecname(3)='Fcol'
       call lp%update_partmesh(pmesh)
       do i=1,lp%np_
          pmesh%var(1,i)=lp%p(i)%d
-         pmesh%var(2,i)=lp%p(i)%Mc
+         pmesh%vec(:,1,i)=lp%p(i)%vel
+         pmesh%vec(:,2,i)=lp%p(i)%angVel
+         pmesh%vec(:,3,i)=lp%p(i)%Acol
       end do
     end block create_pmesh
 
@@ -328,8 +333,8 @@ contains
       call ens_out%add_particle('particles',pmesh)
       call ens_out%add_vector('velocity',Ui,Vi,Wi)
       call ens_out%add_scalar('epsp',lp%VF)
-      call ens_out%add_scalar('Tf',lp%Tf)
-      call ens_out%add_scalar('Yf',lp%Yf)
+      ! call ens_out%add_scalar('Tf',lp%Tf)
+      ! call ens_out%add_scalar('Yf',lp%Yf)
       call ens_out%add_scalar('density',fs%rho)
       call ens_out%add_scalar('pressure',fs%P)
       call ens_out%add_scalar('temperature',sc(ind_T)%SC)
@@ -419,7 +424,7 @@ contains
     use mathtools, only: twoPi
     implicit none
     integer :: ii
-    real(WP) :: total_CO2_mass
+    real(WP) :: total_CO2_mass,average
 
     ! Perform time integration
     do while (.not.time%done())
@@ -443,15 +448,16 @@ contains
 
        ! Collide and advance particles
        call lp%collide(dt=time%dtmid)
-       resU=fs%rho/(1.0_WP-lp%VF)
-       call lp%advance(dt=time%dtmid,U=fs%U,V=fs%V,W=fs%W,rho=resU,visc=fs%visc,T=sc(ind_T)%SC,YCO2=sc(ind_CO2)%SC)
+       rholp=fs%rho/(1.0_WP-lp%VF)
+       call lp%advance(dt=time%dtmid,U=fs%U,V=fs%V,W=fs%W,rho=rholp,visc=fs%visc,stress_x=resU,stress_y=resV,stress_z=resW,&
+            T=sc(ind_T)%SC,YCO2=sc(ind_CO2)%SC,srcU=srcUlp,srcV=srcVlp,srcW=srcWlp,srcSC=srcSClp)
        
        ! Perform sub-iterations
        do while (time%it.le.time%itmax)
           ! ============= SCALAR SOLVER =======================
           do ii=1,2
              ! Build mid-time scalar
-             sc(ii)%SC=0.5_WP*(sc(ii)%SC+sc(ii)%SCold)
+             sc(ii)%SC=0.5_WP*(sc(ii)%SC+sc(ii)%SCold)    
 
              ! Explicit calculation of drhoSC/dt from scalar equation
              call sc(ii)%get_drhoSCdt(resSC,fs%rhoU,fs%rhoV,fs%rhoW)
@@ -460,13 +466,11 @@ contains
              resSC=time%dt*resSC-(2.0_WP*sc(ii)%rho*sc(ii)%SC-(sc(ii)%rho+sc(ii)%rhoold)*sc(ii)%SCold)
              
              ! Add in mass source from particle
-             resSC = resSC + lp%srcSC(:,:,:,ii)
-             print *,'resSC1',resSC, ii
+             resSC = resSC + srcSClp(:,:,:,ii)
              
              ! Form implicit residual
              call sc(ii)%solve_implicit(time%dt,resSC,fs%rhoU,fs%rhoV,fs%rhoW)
-             print *,'resSC2',resSC, ii
-
+                          
              ! Apply this residual
              sc(ii)%SC=2.0_WP*sc(ii)%SC-sc(ii)%SCold+resSC
 
@@ -474,17 +478,17 @@ contains
              call sc(ii)%apply_bcond(time%t,time%dt)
           end do
           ! ===================================================
-          
+
+          ! ============ UPDATE PROPERTIES ====================
           ! Rescale density and scalars
           rescale_scalars: block
             real(WP) :: drho,rho0
-            real(WP) :: mass
             call sc(ind_CO2)%rho_multiply()
             call fs%cfg%integrate(sc(ind_CO2)%rhoold,integral=mean_rho); mean_rho=mean_rho/fs%cfg%vol_total
             rho0=mean_rho
-            call fs%cfg%integrate(lp%srcSC(:,:,:,ind_CO2),integral=drho); drho=drho/fs%cfg%vol_total
+!!            call fs%cfg%integrate(srcSClp(:,:,:,ind_CO2),integral=drho); drho=drho/fs%cfg%vol_total
             mean_rho=mean_rho+drho
-            
+
             ! Rescale density
             sc(ind_CO2)%rho=sc(ind_CO2)%rhoold*mean_rho/rho0
             sc(ind_T)%rho=sc(ind_CO2)%rho
@@ -492,29 +496,15 @@ contains
             ! Rescale scalars
             sc(ind_CO2)%SC=sc(ind_CO2)%rhoSC/sc(ind_CO2)%rho
             sc(ind_T)%SC=Ti
-
           end block rescale_scalars
           
-          ! ============ UPDATE PROPERTIES ====================
           ! Update pressure
           call get_Pthermo
-          ! Update density
-          !call get_rho
           ! Compute rate-of-change of density accounting for particles
-          dRHOdt=(sc(ind_CO2)%RHO-sc(ind_CO2)%RHOold)/time%dtmid-lp%srcSC(:,:,:,ind_CO2)/time%dtmid
+          dRHOdt=(sc(ind_CO2)%RHO-sc(ind_CO2)%RHOold)/time%dtmid-srcSClp(:,:,:,ind_CO2)/time%dtmid
           ! Update transport variables
           call get_viscosity
           call get_thermal_diffusivity
-          ! Backup rhoSC
-          !do ii=1,2
-          !   resSC=sc(ii)%rho*sc(ii)%SC
-          !   ! Rescale scalar for conservation
-          !   sc(ii)%SC=resSC/sc(ii)%rho
-          !end do
-          ! UPDATE THE VISCOSITY
-          ! call get_viscosity
-          ! UPDATE THE DIFFUSIVITY
-          ! call get_diffusivity
           ! ===================================================
 
           ! Build n+1 density
@@ -542,9 +532,9 @@ contains
             do k=fs%cfg%kmin_,fs%cfg%kmax_
                do j=fs%cfg%jmin_,fs%cfg%jmax_
                   do i=fs%cfg%imin_,fs%cfg%imax_
-                    resU(i,j,k) =resU(i,j,k) +sum(fs%itpr_x(:,i,j,k)*lp%srcU(i-1:i,j,k))
-                    resV(i,j,k) =resV(i,j,k) +sum(fs%itpr_y(:,i,j,k)*lp%srcV(i,j-1:j,k))
-                    resW(i,j,k) =resW(i,j,k) +sum(fs%itpr_z(:,i,j,k)*lp%srcW(i,j,k-1:k))
+                    resU(i,j,k) =resU(i,j,k) +sum(fs%itpr_x(:,i,j,k)*srcUlp(i-1:i,j,k))
+                    resV(i,j,k) =resV(i,j,k) +sum(fs%itpr_y(:,i,j,k)*srcVlp(i,j-1:j,k))
+                    resW(i,j,k) =resW(i,j,k) +sum(fs%itpr_z(:,i,j,k)*srcWlp(i,j,k-1:k))
                   end do
                end do
             end do
@@ -610,8 +600,7 @@ contains
        call cflfile%write()
        call adsfile%write()
        call lptfile%write()
-
-       stop
+       !stop
     end do
 
     ! Ouput particle bed
