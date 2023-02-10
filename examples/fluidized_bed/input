@@ -16,19 +16,40 @@ Max time : 		10
 
 # Fluid properties
 Dynamic viscosity : 1.8e-5
+Thermal diffusivity :   0.001
+CO2 diffusivity : 0.001
 Density :   1.2
+Pressure : 101325
 Gravity :   -9.81 0 0
 Inlet velocity : 0.1
+
+
+# Scalars
+Initial T : 350
+Initial CO2 : 0.0
+Inlet T : 350
+Inlet CO2 : 0.1
 
 # Particle parameters
 Bed height : .0128
 Particle volume fraction : 0.5
 Friction coefficient : 0.1
 Particle density :  2600
+Particle temperature : 350
 Particle diameter : 200e-6
 Filter width : 600e-6
 Collision timescale : 15e-5
-Coefficient of restitution : 0.8
+
+# Adsorption
+Adsorption model : Lee
+
+# Pressure solver
+Pressure tolerance : 	1e-5
+Pressure iteration : 	100
+
+# Implicit velocity solver
+Implicit tolerance : 	1e-6
+Implicit iteration : 	100
 
 # Ensight output
 Ensight output period : 80e-5

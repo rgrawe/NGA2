@@ -612,7 +612,7 @@ contains
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcV   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcW   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcE   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,this%nscalar), intent(inout), optional :: srcSC   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,this%nscalar), intent(inout), optional :: srcSC
     
     integer :: i,j,k,ierr
     real(WP) :: mydt,dt_done,deng,Ip,dmdt,dm,average
@@ -625,6 +625,10 @@ contains
     if (present(srcW)) srcW=0.0_WP
     if (present(srcE)) srcE=0.0_WP
     if (present(srcSC)) srcSC=0.0_WP
+
+    ! Filter fields
+    call this%filter(T)
+    call this%filter(YCO2)
 
     ! Zero out number of particles removed
     this%np_out=0
@@ -870,7 +874,6 @@ contains
       end select
     end block mass_transfer
 
-
     ! Compute heat transfer
     compute_heat_transfer: block
       !> Todo
@@ -916,7 +919,7 @@ contains
     this%ind_CO2 = 0
     do i=1,this%nscalar
        select case(trim(sc(i)%name))
-       case('Temperature')
+       case('Temperature','T')
           this%ind_T=i
        case('CO2')
           this%ind_CO2=i
@@ -1360,7 +1363,6 @@ contains
     call MPI_ALLREDUCE(this%Mcmin ,buf,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr); this%Mcmin =buf
     call MPI_ALLREDUCE(this%Mcmax ,buf,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); this%Mcmax =buf
     call MPI_ALLREDUCE(this%Mcmean,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Mcmean=buf/safe_np
-    
   end subroutine get_max
 
 
