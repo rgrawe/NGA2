@@ -5,12 +5,12 @@ Partition :	1 1 1
 Lx :	1600e-6
 Ly :	1600e-6
 Lz :    1600e-6
-nx :	8
-ny :	8
-nz :	8
+nx :	2
+ny :	2
+nz :	2
 
 # Time integration
-Max timestep size :	0.001
+Max timestep size :	0.00001
 Max cfl number :	   1
 Max time :           5
 
@@ -23,7 +23,7 @@ Pressure : 101325
 Gravity :   0 0 0
 
 # Scalars
-Initial T : 350
+Initial T : 300
 Initial CO2 : 0.1
 
 # Particle parameters
@@ -32,6 +32,7 @@ Avg. volume fraction : 0.4
 Coefficient of restitution : 0.8
 Particle density :  2000
 Particle diameter : 200e-6
+Particle heat capacity : 1130
 Particle count : 1
 Particle temperature : 350
 
@@ -47,4 +48,4 @@ Implicit tolerance : 	1e-6
 Implicit iteration : 	100
 
 # Ensight output
-Ensight output period : .1
+Ensight output period : 80e-5

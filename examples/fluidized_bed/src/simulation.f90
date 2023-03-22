@@ -3,6 +3,8 @@ module simulation
   use precision,         only: WP
   use geometry,          only: cfg
   use lpt_class,         only: lpt
+  use hypre_uns_class,   only: hypre_uns
+  use hypre_str_class,   only: hypre_str
   use lowmach_class,     only: lowmach
   use vdscalar_class,    only: vdscalar
   use timetracker_class, only: timetracker
@@ -13,22 +15,25 @@ module simulation
   implicit none
   private
 
-  !> Get an LPT solver, a lowmach solver, and corresponding time tracker
+  !> Get a scalar solver, an LPT solver, a lowmach solver, and corresponding time tracker, plus a couple of linear solvers
   type(vdscalar), dimension(2), public :: sc
+  type(hypre_uns),   public :: ps
+  type(hypre_str),   public :: vs
   type(lowmach),     public :: fs
   type(lpt),         public :: lp
   type(timetracker), public :: time
-
+  
   !> Ensight postprocessing
   type(partmesh) :: pmesh
   type(ensight)  :: ens_out
   type(event)    :: ens_evt
-
+  
   !> Simulation monitor file
   type(monitor) :: mfile,cflfile,lptfile,tfile,adsfile,scfile
 
-  public :: simulation_init,simulation_run,simulation_final
 
+  public :: simulation_init,simulation_run,simulation_final
+  
   !> Work arrays and fluid properties
   real(WP), dimension(:,:,:), allocatable :: resU,resV,resW,resSC
   real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi,rhof,dRHOdt
@@ -52,9 +57,9 @@ module simulation
 
   !> Wallclock time for monitoring
   type :: timer
-     real(WP) :: time_in
-     real(WP) :: time
-     real(WP) :: percent
+    real(WP) :: time_in
+    real(WP) :: time
+    real(WP) :: percent
   end type timer
   type(timer) :: wt_total,wt_vel,wt_pres,wt_lpt,wt_sc,wt_rest
 
@@ -231,8 +236,9 @@ contains
 
     ! Create a low Mach flow solver with bconds
     create_flow_solver: block
-      use ils_class,     only: pcg_pfmg,pcg_amg
-      use lowmach_class, only: dirichlet,clipped_neumann
+      use hypre_uns_class, only: gmres_amg  
+      use hypre_str_class, only: pcg_pfmg
+      use lowmach_class,   only: dirichlet,clipped_neumann
       ! Create flow solver
       fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
       ! Define boundary conditions
@@ -246,13 +252,15 @@ contains
       ! Assign acceleration of gravity
       call param_read('Gravity',fs%gravity)
       ! Configure pressure solver
-      call param_read('Pressure iteration',fs%psolv%maxit)
-      call param_read('Pressure tolerance',fs%psolv%rcvg)
+      ps=hypre_uns(cfg=cfg,name='Pressure',method=gmres_amg,nst=7)
+      call param_read('Pressure iteration',ps%maxit)
+      call param_read('Pressure tolerance',ps%rcvg)
       ! Configure implicit velocity solver
-      call param_read('Implicit iteration',fs%implicit%maxit)
-      call param_read('Implicit tolerance',fs%implicit%rcvg)
+      vs=hypre_str(cfg=cfg,name='Velocity',method=pcg_pfmg,nst=7)
+      call param_read('Implicit iteration',vs%maxit)
+      call param_read('Implicit tolerance',vs%rcvg)
       ! Setup the solver
-      call fs%setup(pressure_ils=pcg_amg,implicit_ils=pcg_pfmg)
+      call fs%setup(pressure_solver=ps,implicit_solver=vs)
     end block create_flow_solver
 
     ! Create scalar solvers for T and CO2
@@ -495,8 +503,9 @@ contains
       integer :: ii
       character(len=str_medium) :: str
       ! Prepare some info about fields
-      call fs%get_cfl(time%dt,time%cfl)
-      call lp%get_cfl(time%dt,time%cfl)
+      real(WP) :: cfl
+      call lp%get_cfl(time%dt,cflc=time%cfl,cfl=time%cfl)
+      call fs%get_cfl(time%dt,cfl); time%cfl=max(time%cfl,cfl)
       call fs%get_max()
       call lp%get_max()
       do ii=1,nscalar
@@ -609,6 +618,7 @@ contains
     use parallel, only: parallel_time
     implicit none
     integer :: ii
+    real(WP) :: cfl
 
     ! Perform time integration
     do while (.not.time%done())
@@ -617,8 +627,8 @@ contains
        wt_total%time_in=parallel_time()
 
        ! Increment time
-       call fs%get_cfl(time%dt,time%cfl)
-       call lp%get_cfl(time%dt,time%cfl)
+       call lp%get_cfl(time%dt,cflc=time%cfl,cfl=time%cfl)
+       call fs%get_cfl(time%dt,cfl); time%cfl=max(time%cfl,cfl)
        call time%adjust_dt()
        call time%increment()
 

@@ -74,6 +74,8 @@ module lpt_class
 
      ! Particle density
      real(WP) :: rho                                     !< Density of particle
+     ! Particle heat capacity
+     real(WP) :: Cp                                     !< Heat capacity of particle
 
      ! Gravitational acceleration
      real(WP), dimension(3) :: gravity=0.0_WP            !< Acceleration of gravity
@@ -589,7 +591,7 @@ contains
   !> Advance the particle equations by a specified time step dt
   !> p%id=0 => no coll, no solve
   !> p%id=-1=> no coll, no move
-  subroutine advance(this,dt,U,V,W,rho,visc,stress_x,stress_y,stress_z,vortx,vorty,vortz,T,YCO2,srcU,srcV,srcW,srcE,srcSC)
+  subroutine advance(this,dt,U,V,W,rho,visc,diff,stress_x,stress_y,stress_z,vortx,vorty,vortz,T,YCO2,srcU,srcV,srcW,srcE,srcSC)
     use mpi_f08, only : MPI_SUM,MPI_INTEGER
     use mathtools, only: Pi
     implicit none
@@ -600,6 +602,7 @@ contains
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: W         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: rho       !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: visc      !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: diff      !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_x  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_y  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_z  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -615,7 +618,7 @@ contains
     real(WP), dimension(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,this%nscalar), intent(inout), optional :: srcSC   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     
     integer :: i,j,k,ierr
-    real(WP) :: mydt,dt_done,deng,Ip,dmdt,dm,average
+    real(WP) :: mydt,dt_done,deng,Ip,dmdt,dm,dTdt,dTemp,fCp
     real(WP), dimension(3) :: acc,torque,dmom
     type(part) :: myp,pold
 
@@ -645,29 +648,35 @@ contains
           ! Particle moment of inertia per unit mass
           Ip = 0.1_WP*myp%d**2
           ! Advance with Euler prediction
-          call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=T,YCO2=YCO2,p=myp,acc=acc,torque=torque,opt_dt=myp%dt,dmdt=dmdt)
+          call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,diff=diff,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=T,YCO2=YCO2,p=myp,acc=acc,torque=torque,opt_dt=myp%dt,dmdt=dmdt,dTdt=dTdt,fCp=fCp)
           !if (this%use_lift.and.present(vortx).and.present(vorty).and.present(vortz)) call this%get_lift(vortx,vorty,vortz,acc=acc)
           myp%pos=pold%pos+0.5_WP*mydt*myp%vel
           myp%vel=pold%vel+0.5_WP*mydt*(acc+this%gravity+myp%Acol)
           myp%angVel=pold%angVel+0.5_WP*mydt*(torque+myp%Tcol)/Ip
           myp%Mc=pold%Mc+0.5_WP*mydt*dmdt
+          myp%T=pold%T+0.5_WP*mydt*dTdt
           ! Correct with midpoint rule
-          call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=T,YCO2=YCO2,p=myp,acc=acc,torque=torque,opt_dt=myp%dt,dmdt=dmdt)
+          call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,diff=diff,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=T,YCO2=YCO2,p=myp,acc=acc,torque=torque,opt_dt=myp%dt,dmdt=dmdt,dTdt=dTdt,fCp=fCp)
           myp%pos=pold%pos+mydt*myp%vel
           myp%vel=pold%vel+mydt*(acc+this%gravity+myp%Acol)
           myp%angVel=pold%angVel+mydt*(torque+myp%Tcol)/Ip
           myp%Mc=pold%Mc+mydt*dmdt
+          myp%T=pold%T+mydt*dTdt
           ! Relocalize
           myp%ind=this%cfg%get_ijk_global(myp%pos,myp%ind)
           ! Send source term back to the mesh
-          dmom=mydt*acc*this%rho*Pi/6.0_WP*myp%d**3
           dm=mydt*dmdt
+          dmom=mydt*acc*(this%rho*Pi/6.0_WP*myp%d**3+myp%Mc)+myp%vel*dm
+          dTemp=((this%rho*Pi/6.0_WP*myp%d**3+myp%Mc)*this%Cp*dTdt*mydt+dm*myp%T*fCp)/fCp
           deng=sum(dmom*myp%vel)
           if (this%cfg%nx.gt.1.and.present(srcU)) call this%cfg%set_scalar(Sp=-dmom(1),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcU,bc='n')
           if (this%cfg%ny.gt.1.and.present(srcV)) call this%cfg%set_scalar(Sp=-dmom(2),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcV,bc='n')
           if (this%cfg%nz.gt.1.and.present(srcW)) call this%cfg%set_scalar(Sp=-dmom(3),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcW,bc='n')
           if (present(srcE))                      call this%cfg%set_scalar(Sp=-deng   ,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcE,bc='n')
-          if (present(srcSC))                     call this%cfg%set_scalar(Sp=-dm     ,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcSC(:,:,:,this%ind_CO2),bc='n')
+          if (present(srcSC)) then
+             call this%cfg%set_scalar(Sp=-dm   ,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcSC(:,:,:,this%ind_CO2),bc='n')
+             call this%cfg%set_scalar(Sp=-dTemp,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcSC(:,:,:,this%ind_T  ),bc='n')
+          end if
           ! Increment
           dt_done=dt_done+mydt
        end do
@@ -733,7 +742,7 @@ contains
 
 
   !> Calculate RHS of the particle ODEs
-  subroutine get_rhs(this,U,V,W,rho,visc,stress_x,stress_y,stress_z,T,YCO2,p,acc,torque,opt_dt,dmdt)
+  subroutine get_rhs(this,U,V,W,rho,visc,diff,stress_x,stress_y,stress_z,T,YCO2,p,acc,torque,opt_dt,dmdt,dTdt,fCp)
     implicit none
     class(lpt), intent(inout) :: this
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: U         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -741,6 +750,7 @@ contains
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: W         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: rho       !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: visc      !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: diff      !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_x  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_y  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_z  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -748,8 +758,8 @@ contains
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: YCO2 !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     type(part), intent(in) :: p
     real(WP), dimension(3), intent(out) :: acc,torque
-    real(WP), intent(out) :: opt_dt,dmdt
-    real(WP) :: fvisc,frho,pVF,fVF,fT,fYCO2
+    real(WP), intent(out) :: opt_dt,dmdt,dTdt,fCp
+    real(WP) :: fvisc,fdiff,frho,pVF,fVF,fT,fYCO2,Re,tau
     real(WP), dimension(3) :: fvel,fstress,fvort
 
     ! Interpolate fluid quantities to particle location
@@ -761,6 +771,8 @@ contains
       ! Interpolate the fluid phase viscosity to the particle location
       fvisc=this%cfg%get_scalar(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),S=visc,bc='n')
       fvisc=fvisc+epsilon(1.0_WP)
+      ! Interpolate the fluid phase thermal diffusivity to the particle location
+      fdiff=this%cfg%get_scalar(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),S=diff,bc='n')
       ! Interpolate the fluid phase density to the particle location
       frho=this%cfg%get_scalar(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),S=rho,bc='n')
       ! Interpolate the particle volume fraction to the particle location
@@ -774,9 +786,15 @@ contains
       !if (this%use_lift) fvort=this%cfg%get_velocity(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),U=U,V=V,W=W)
     end block interpolate
 
+    ! Particle Reynolds number
+    Re=frho*norm2(p%vel-fvel)*p%d/fvisc+epsilon(1.0_WP)
+    
+    ! Particle response time
+    tau=this%rho*p%d**2/(18.0_WP*fvisc)
+
     ! Compute acceleration due to drag
     compute_drag: block
-      real(WP) :: Re,tau,corr,b1,b2
+      real(WP) :: corr,b1,b2
       ! Particle Reynolds number
       Re=frho*norm2(p%vel-fvel)*p%d/fvisc+epsilon(1.0_WP)
       ! Drag correction
@@ -798,10 +816,10 @@ contains
          corr=1.0_WP
       end select
       ! Particle response time
-      tau=this%rho*p%d**2/(18.0_WP*fvisc*corr)
+
       ! Return acceleration and optimal timestep size
-      acc=(fvel-p%vel)/tau+fstress/this%rho
-      opt_dt=tau/real(this%nstep,WP)
+      acc=(fvel-p%vel)*corr/tau+fstress/this%rho
+      opt_dt=(tau/corr)/real(this%nstep,WP)
     end block compute_drag
 
     ! Compute acceleration due to Saffman lift
@@ -873,7 +891,14 @@ contains
 
     ! Compute heat transfer
     compute_heat_transfer: block
-      !> Todo
+      real(WP) :: Pr,Nu
+      
+      fCp=1000.0_WP
+      Pr = fvisc/(frho*fdiff)
+      !Nu = (7.0_WP-10.0_WP*fVF+5.0_WP*fVF**2)*(1.0_WP+0.7_WP*Re**(0.2_WP)*Pr**(1.0_WP/3.0_WP))& ! Gunn (1978)
+      !     + (1.33_WP-2.4_WP*fVF+1.2_WP*fVF**2)*Re**(0.7_WP)*Pr**(1.0_WP/3.0_WP)
+      Nu=(-0.46_WP+1.77_WP*fVF+0.69_WP*fVF**2)/fVf**3+(1.37_WP-2.4_WP*fVf+1.2_WP*fVf**2)*Re**(0.7_WP)*Pr**(1.0_WP/3.0_WP) ! Sun (2015)
+      dTdt=Nu*fCp*(fT-p%T)/(3.0_WP*Pr*this%Cp*tau)
     end block compute_heat_transfer
 
   end subroutine get_rhs

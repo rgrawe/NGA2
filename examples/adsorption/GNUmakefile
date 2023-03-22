@@ -6,6 +6,7 @@ PRECISION = DOUBLE
 USE_MPI   = TRUE
 USE_HYPRE = TRUE
 USE_LAPACK= TRUE
+USE_FFTW   = TRUE
 USE_IRL   = FALSE
 PROFILE   = FALSE
 DEBUG     = FALSE
@@ -26,6 +27,7 @@ VPATH_LOCATIONS   += $(Ulocs)
 #HDF5_DIR = /Users/desjardi/Builds/hdf5
 LAPACK_DIR= /usr/local/Cellar/lapack/3.10.1_1
 HYPRE_DIR = /Users/rgrawe/NGA2hypre
+FFTW_DIR=/Users/rgrawe/fftw
 #IRL_DIR   = /Users/desjardi/Builds/IRL
 
 # NGA compilation definitions
