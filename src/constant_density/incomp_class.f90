@@ -818,20 +818,14 @@ contains
    
    !> Add a boundary condition
    subroutine add_bcond(this,name,type,locator,face,dir,canCorrect)
-      use string,   only: lowercase
-      use messager, only: die
+      use string,         only: lowercase
+      use messager,       only: die
+      use iterator_class, only: locator_ftype
       implicit none
       class(incomp), intent(inout) :: this
       character(len=*), intent(in) :: name
       integer, intent(in) :: type
-      external :: locator
-      interface
-         logical function locator(pargrid,ind1,ind2,ind3)
-            use pgrid_class, only: pgrid
-            class(pgrid), intent(in) :: pargrid
-            integer, intent(in) :: ind1,ind2,ind3
-         end function locator
-      end interface
+      procedure(locator_ftype) :: locator
       character(len=1), intent(in) :: face
       integer, intent(in) :: dir
       logical, intent(in) :: canCorrect
@@ -1147,10 +1141,12 @@ contains
    
    
    !> Calculate the velocity divergence based on U/V/W
-   subroutine get_div(this)
+   subroutine get_div(this,src)
       implicit none
       class(incomp), intent(inout) :: this
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), optional :: src !< Mass source term
       integer :: i,j,k
+      ! Calculate divergence of velocity
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
@@ -1160,6 +1156,16 @@ contains
             end do
          end do
       end do
+      ! If present, account for mass source
+      if (present(src)) then
+         do k=this%cfg%kmin_,this%cfg%kmax_
+            do j=this%cfg%jmin_,this%cfg%jmax_
+               do i=this%cfg%imin_,this%cfg%imax_
+                  this%div(i,j,k)=this%div(i,j,k)-src(i,j,k)
+               end do
+            end do
+         end do
+      end if
       ! Sync it
       call this%cfg%sync(this%div)
    end subroutine get_div
@@ -1672,17 +1678,23 @@ contains
    
    
    !> Correct MFR through correctable bconds
-   subroutine correct_mfr(this)
+   subroutine correct_mfr(this,src)
       use mpi_f08, only: MPI_SUM
       implicit none
       class(incomp), intent(inout) :: this
-      real(WP) :: mfr_error,vel_correction
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), optional :: src !< Mass source term
+      real(WP) :: mfr_error,vel_correction,int
       integer :: i,j,k,n
       type(bcond), pointer :: my_bc
       
       ! Evaluate MFR mismatch and velocity correction
       call this%get_mfr()
       mfr_error=sum(this%mfr)
+      if (present(src)) then
+         ! Also account for provided source term
+         call this%cfg%integrate_without_VF(src,int)
+         mfr_error=mfr_error-int
+      end if
       if (abs(mfr_error).lt.10.0_WP*epsilon(1.0_WP).or.abs(this%correctable_area).lt.10.0_WP*epsilon(1.0_WP)) return
       vel_correction=-mfr_error/(this%rho*this%correctable_area)
       
@@ -1748,7 +1760,6 @@ contains
    
    !> Solve for implicit velocity residual
    subroutine solve_implicit(this,dt,resU,resV,resW)
-      use ils_class, only: amg
       implicit none
       class(incomp), intent(inout) :: this
       real(WP), intent(in) :: dt

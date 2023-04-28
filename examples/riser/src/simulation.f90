@@ -1,27 +1,28 @@
 !> Various definitions and tools for running an NGA2 simulation
 module simulation
-  use string,            only: str_medium
-  use precision,         only: WP
-  use geometry,          only: cfg,D,get_VF
-  use lowmach_class,     only: lowmach
-  use fourier3d_class,   only: fourier3d
-  use hypre_str_class,   only: hypre_str
-  use lpt_class,         only: lpt
-  use timetracker_class, only: timetracker
-  use ensight_class,     only: ensight
-  use partmesh_class,    only: partmesh
-  use event_class,       only: event
-  use datafile_class,    only: datafile
-  use monitor_class,     only: monitor
+  use string,             only: str_medium
+  use precision,          only: WP
+  use geometry,           only: cfg,D,get_VF
+  use lowmach_class,      only: lowmach
+  use fft3d_class,        only: fft3d
+  use ddadi_class,        only: ddadi
+  use hypre_str_class,    only: hypre_str
+  use lpt_class,          only: lpt
+  use timetracker_class,  only: timetracker
+  use ensight_class,      only: ensight
+  use partmesh_class,     only: partmesh
+  use event_class,        only: event
+  use datafile_class,     only: datafile
+  use monitor_class,      only: monitor
   implicit none
   private
 
   !> Get an LPT solver, a lowmach solver, and corresponding time tracker
-  type(lowmach),     public :: fs
-  type(fourier3d),   public :: ps
-  type(hypre_str),   public :: vs
-  type(lpt),         public :: lp
-  type(timetracker), public :: time
+  type(lowmach),      public :: fs
+  type(fft3d),        public :: ps
+  type(ddadi),        public :: vs
+  type(lpt),          public :: lp
+  type(timetracker),  public :: time
 
   !> Provide a datafile and an event tracker for saving restarts
   type(event)    :: save_evt
@@ -33,9 +34,6 @@ module simulation
   type(partmesh) :: pmesh
   type(event)    :: ens_evt
 
-  !> Event for post-processing
-  type(event) :: ppevt
-
   !> Simulation monitor file
   type(monitor) :: mfile,cflfile,lptfile,tfile
 
@@ -45,9 +43,13 @@ module simulation
   real(WP), dimension(:,:,:), allocatable :: resU,resV,resW
   real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi,rho0,dRHOdt
   real(WP), dimension(:,:,:), allocatable :: srcUlp,srcVlp,srcWlp
+  real(WP), dimension(:,:,:), allocatable :: tmp1,tmp2,tmp3
   real(WP), dimension(:,:,:), allocatable :: G
   real(WP), dimension(:,:,:,:), allocatable :: Gnorm
   real(WP) :: visc,rho,mfr,mfr_target,bforce
+
+  !> Max timestep size for LPT
+  real(WP) :: lp_dt,lp_dt_max
 
   !> Wallclock time for monitoring
   type :: timer
@@ -59,55 +61,6 @@ module simulation
 
 contains
 
-
-    !> Specialized subroutine that outputs mean statistics
-   subroutine postproc()
-      use string,    only: str_medium
-      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM
-      use parallel,  only: MPI_REAL_WP
-      implicit none
-      integer :: iunit,ierr,i,j,k
-      real(WP), dimension(:), allocatable :: Uavg,Uavg_,vol,vol_
-      character(len=str_medium) :: filename,timestamp
-!!$      ! Allocate radial line storage
-!!$      allocate(Uavg (fs%cfg%jmin:fs%cfg%jmax)); Uavg =0.0_WP
-!!$      allocate(Uavg_(fs%cfg%jmin:fs%cfg%jmax)); Uavg_=0.0_WP
-!!$      allocate(vol_ (fs%cfg%jmin:fs%cfg%jmax)); vol_ =0.0_WP
-!!$      allocate(vol  (fs%cfg%jmin:fs%cfg%jmax)); vol  =0.0_WP
-!!$      ! Integrate all data over x and z
-!!$      do k=fs%cfg%kmin_,fs%cfg%kmax_
-!!$         do j=fs%cfg%jmin_,fs%cfg%jmax_
-!!$            do i=fs%cfg%imin_,fs%cfg%imax_
-!!$               vol_(j) = vol_(j)+fs%cfg%vol(i,j,k)
-!!$               Uavg_(j)=Uavg_(j)+fs%cfg%vol(i,j,k)*fs%U(i,j,k)
-!!$            end do
-!!$         end do
-!!$      end do
-!!$      ! All-reduce the data
-!!$      call MPI_ALLREDUCE( vol_, vol,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
-!!$      call MPI_ALLREDUCE(Uavg_,Uavg,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
-!!$      do j=fs%cfg%jmin,fs%cfg%jmax
-!!$         if (vol(j).gt.0.0_WP) then
-!!$            Uavg(j)=Uavg(j)/vol(j)
-!!$         else
-!!$            Uavg(j)=0.0_WP
-!!$         end if
-!!$      end do
-!!$      ! If root, print it out
-!!$      if (fs%cfg%amRoot) then
-!!$         filename='Uavg_'
-!!$         write(timestamp,'(es12.5)') time%t
-!!$         open(newunit=iunit,file=trim(adjustl(filename))//trim(adjustl(timestamp)),form='formatted',status='replace',access='stream',iostat=ierr)
-!!$         write(iunit,'(a12,3x,a12)') 'Height','Uavg'
-!!$         do j=fs%cfg%jmin,fs%cfg%jmax
-!!$            write(iunit,'(es12.5,3x,es12.5)') fs%cfg%ym(j),Uavg(j)
-!!$         end do
-!!$         close(iunit)
-!!$      end if
-!!$      ! Deallocate work arrays
-!!$      deallocate(Uavg,Uavg_,vol,vol_)
-    end subroutine postproc
-    
 
   !> Compute massflow rate
    function get_bodyforce_mfr(srcU) result(mfr)
@@ -175,6 +128,8 @@ contains
          ! Read the datafile
          df=datafile(pg=cfg,fdata='restart/data_'//trim(adjustl(timestamp)))
       else
+         ! Prepare a new directory for storing files for restart
+         call execute_command_line('mkdir -p restart')
          ! If we are not restarting, we will still need a datafile for saving restart files
          df=datafile(pg=cfg,filename=trim(cfg%name),nval=4,nvar=4)
          df%valname(1)='t'
@@ -188,7 +143,7 @@ contains
       end if
     end block restart_and_save
 
-    
+
     ! Revisit timetracker to adjust time and time step values if this is a restart
     update_timetracker: block
       if (restarted) then
@@ -198,7 +153,7 @@ contains
       end if
     end block update_timetracker
 
-    
+
     ! Initialize wallclock timers
     initialize_timers: block
       wt_total%time=0.0_WP; wt_total%percent=0.0_WP
@@ -222,11 +177,12 @@ contains
       ! Assign acceleration of gravity
       call param_read('Gravity',fs%gravity)
       ! Configure pressure solver
-      ps=fourier3d(cfg=cfg,name='Pressure',nst=7)
+      ps=fft3d(cfg=cfg,name='Pressure',nst=7)
       ! Configure implicit velocity solver
-      vs=hypre_str(cfg=cfg,name='Velocity',method=pcg_pfmg,nst=7)
-      call param_read('Implicit iteration',vs%maxit)
-      call param_read('Implicit tolerance',vs%rcvg)
+      !vs=hypre_str(cfg=cfg,name='Velocity',method=pcg_pfmg,nst=7)
+      !call param_read('Implicit iteration',vs%maxit)
+      !call param_read('Implicit tolerance',vs%rcvg)
+      vs=ddadi(cfg=cfg,name='Velocity',nst=7)
       ! Setup the solver
       call fs%setup(pressure_solver=ps,implicit_solver=vs)
     end block create_flow_solver
@@ -246,6 +202,9 @@ contains
       allocate(Wi      (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(rho0    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(G       (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(tmp1    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(tmp2    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(tmp3    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(Gnorm   (1:3,cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
     end block allocate_work_arrays
 
@@ -256,17 +215,16 @@ contains
       use mathtools, only: Pi,twoPi
       use mpi_f08,  only: MPI_SUM,MPI_ALLREDUCE,MPI_INTEGER
       use parallel, only: MPI_REAL_WP
-      real(WP) :: VFavg,Volp,Vol_,sumVolp,Tp,meand,dist,r,buf
+      real(WP) :: VFavg,Vol_,sumVolp,Tp,meand,r,buf
       real(WP) :: dmean,dsd,dmin,dmax,dshift
       real(WP), dimension(:), allocatable :: dp
       integer :: i,j,k,ii,jj,kk,nn,ip,jp,kp,np,offset,ierr
       integer, dimension(:,:,:), allocatable :: npic      !< Number of particle in cell
       integer, dimension(:,:,:,:), allocatable :: ipic    !< Index of particle in cell
       character(len=str_medium) :: timestamp
-      logical :: overlap
+      logical :: overlap,outside
       ! Create solver
       lp=lpt(cfg=cfg,name='LPT')
-      ! Get pipe diameter from input
       ! Get mean volume fraction from input
       call param_read('Particle volume fraction',VFavg)
       ! Get drag model from input
@@ -283,6 +241,9 @@ contains
          dmin=dmean
          dmax=dmean
       end if
+      ! Maximum timestep size used for particles
+      call param_read('Particle timestep size',lp_dt_max,default=huge(1.0_WP))
+      lp_dt=lp_dt_max
       ! Get particle temperature from input
       call param_read('Particle temperature',Tp,default=298.15_WP)
       ! Set collision timescale
@@ -306,12 +267,12 @@ contains
          do k=lp%cfg%kmin_,lp%cfg%kmax_
             do j=lp%cfg%jmin_,lp%cfg%jmax_
                do i=lp%cfg%imin_,fs%cfg%imax_
-                  Vol_=Vol_+lp%cfg%dx(i)*lp%cfg%dy(j)*lp%cfg%dz(k)
+                  Vol_=Vol_+lp%cfg%vol(i,j,k)*lp%cfg%VF(i,j,k)
                end do
             end do
          end do
          ! Get particle diameters
-         np=5*VFavg*Vol_/(pi*dmean**3/6.0_WP)
+         np=5*ceiling(VFavg*Vol_/(pi*dmean**3/6.0_WP))
          allocate(dp(np))
          sumVolp=0.0_WP; np=0
          do while(sumVolp.lt.VFavg*Vol_)
@@ -334,9 +295,14 @@ contains
             ! Give position (avoid overlap)
             overlap=.true.
             do while (overlap)
-               lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin_),lp%cfg%x(lp%cfg%imax_+1)-dmax),&
-                    &       random_uniform(lp%cfg%y(lp%cfg%jmin_),lp%cfg%y(lp%cfg%jmax_+1)-dmax),&
-                    &       random_uniform(lp%cfg%z(lp%cfg%kmin_),lp%cfg%z(lp%cfg%kmax_+1)-dmax)]
+               outside=.true.
+               do while (outside)
+                  lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin_),lp%cfg%x(lp%cfg%imax_+1)-dmax),&
+                       &       random_uniform(lp%cfg%y(lp%cfg%jmin_),lp%cfg%y(lp%cfg%jmax_+1)-dmax),&
+                       &       random_uniform(lp%cfg%z(lp%cfg%kmin_),lp%cfg%z(lp%cfg%kmax_+1)-dmax)]
+                  if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
+                  if (sqrt(sum(lp%p(i)%pos(2:3))**2).lt.0.5*(D-lp%p(i)%d)) outside=.false.
+               end do
                lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
                overlap=.false.
                do kk=lp%p(i)%ind(3)-1,lp%p(i)%ind(3)+1
@@ -350,29 +316,23 @@ contains
                   end do
                end do
             end do
-            ! Check if particle is within the pipe
-            r=sqrt(lp%p(i)%pos(2)**2+lp%p(i)%pos(3)**2)
-            if (r.le.0.5_WP*(D-lp%p(i)%d)) then
-               ! Activate the particle
-               lp%p(i)%flag=0
-               ip=lp%p(i)%ind(1); jp=lp%p(i)%ind(2); kp=lp%p(i)%ind(3)
-               npic(ip,jp,kp)=npic(ip,jp,kp)+1
-               ipic(npic(ip,jp,kp),ip,jp,kp)=i
-               ! Set the temperature
-               lp%p(i)%T=Tp
-               ! Give zero velocity
-               lp%p(i)%vel=0.0_WP
-               ! Give zero collision force
-               lp%p(i)%Acol=0.0_WP
-               lp%p(i)%Tcol=0.0_WP
-               ! Give zero dt
-               lp%p(i)%dt=0.0_WP
-               ! Sum up volume
-               sumVolp=sumVolp+Pi/6.0_WP*lp%p(i)%d**3
-               meand=meand+lp%p(i)%d
-            else
-               lp%p(i)%flag=1
-            end if
+            ! Activate the particle
+            lp%p(i)%flag=0
+            ip=lp%p(i)%ind(1); jp=lp%p(i)%ind(2); kp=lp%p(i)%ind(3)
+            npic(ip,jp,kp)=npic(ip,jp,kp)+1
+            ipic(npic(ip,jp,kp),ip,jp,kp)=i
+            ! Set the temperature
+            lp%p(i)%T=Tp
+            ! Give zero velocity
+            lp%p(i)%vel=0.0_WP
+            ! Give zero collision force
+            lp%p(i)%Acol=0.0_WP
+            lp%p(i)%Tcol=0.0_WP
+            ! Give zero dt
+            lp%p(i)%dt=0.0_WP
+            ! Sum up volume
+            sumVolp=sumVolp+Pi/6.0_WP*lp%p(i)%d**3
+            meand=meand+lp%p(i)%d
          end do
          deallocate(dp,npic,ipic)
          call lp%sync()
@@ -416,35 +376,36 @@ contains
     ! Initialize our velocity field
     initialize_velocity: block
       real(WP) :: Ubulk
+      ! Store fluid density without volume fractioin
+      fs%rho=rho; rho0=rho
+      ! Get velocity and mass flowrate
       if (restarted) then
          call df%pullvar(name='U',var=fs%U)
          call df%pullvar(name='V',var=fs%V)
          call df%pullvar(name='W',var=fs%W)
          call df%pullvar(name='P',var=fs%P)
+         call df%pullval(name='mfr',val=mfr)
+         call df%pullval(name='bforce',val=bforce)
       else
-         ! Initial velocity
          call param_read('Bulk velocity',Ubulk)
          fs%U=Ubulk; fs%V=0.0_WP; fs%W=0.0_WP; fs%P=0.0_WP
+         call fs%rho_multiply
+         ! Get target MFR using bulk velocity in absence of particles
+         mfr=get_bodyforce_mfr()
+         bforce=0.0_WP
       end if
-      ! Set density from particle volume fraction and store initial density
+      ! Set density from particle volume fraction
       fs%rho=rho*(1.0_WP-lp%VF)
-      rho0=rho
       ! Form momentum
       call fs%rho_multiply
       fs%rhoUold=fs%rhoU
+      dRHOdt=0.0_WP
       ! Apply all other boundary conditions
       call fs%interp_vel(Ui,Vi,Wi)
       call fs%get_div(drhodt=dRHOdt)
       ! Compute MFR through all boundary conditions
       call fs%get_mfr()
-      ! Set initial MFR and body force
-      if (restarted) then
-         call df%pullval(name='mfr',val=mfr)
-         call df%pullval(name='bforce',val=bforce)
-      else
-         mfr=get_bodyforce_mfr()
-         bforce=0.0_WP
-      end if
+      ! Store target MFR
       mfr_target=mfr
     end block initialize_velocity
 
@@ -481,9 +442,9 @@ contains
       call ens_out%add_particle('particles',pmesh)
       call ens_out%add_vector('velocity',Ui,Vi,Wi)
       call ens_out%add_scalar('levelset',G)
-      call ens_out%add_scalar('ibm_vf',fs%cfg%VF)
       call ens_out%add_scalar('pressure',fs%P)
       call ens_out%add_scalar('epsp',lp%VF)
+      call ens_out%add_scalar('ptke',lp%ptke)
       ! Output to ensight
       if (ens_evt%occurs()) call ens_out%write_data(time%t)
     end block create_ensight
@@ -492,7 +453,7 @@ contains
     create_monitor: block
       real(WP) :: cfl
       ! Prepare some info about fields
-      call lp%get_cfl(time%dt,cflc=time%cfl,cfl=time%cfl)
+      call lp%get_cfl(time%dt,cflc=time%cfl)
       call fs%get_cfl(time%dt,cfl); time%cfl=max(time%cfl,cfl)
       call fs%get_max()
       call lp%get_max()
@@ -528,8 +489,10 @@ contains
       lptfile=monitor(amroot=lp%cfg%amRoot,name='lpt')
       call lptfile%add_column(time%n,'Timestep number')
       call lptfile%add_column(time%t,'Time')
+      call lptfile%add_column(lp_dt,'Particle dt')
       call lptfile%add_column(lp%VFmean,'VFp mean')
       call lptfile%add_column(lp%VFmax,'VFp max')
+      call lptfile%add_column(lp%VFvar,'VFp var')
       call lptfile%add_column(lp%np,'Particle number')
       call lptfile%add_column(lp%ncol,'Collision number')
       call lptfile%add_column(lp%Umin,'Particle Umin')
@@ -557,16 +520,6 @@ contains
       call tfile%write()
     end block create_monitor
 
-
-    ! Create a specialized post-processing file
-    create_postproc: block
-      ! Create event for data postprocessing
-      ppevt=event(time=time,name='Postproc output')
-      call param_read('Postproc output period',ppevt%tper)
-      ! Perform the output
-      if (ppevt%occurs()) call postproc()
-    end block create_postproc
-
   end subroutine simulation_init
 
 
@@ -583,7 +536,7 @@ contains
        wt_total%time_in=parallel_time()
 
        ! Increment time
-       call lp%get_cfl(time%dt,cflc=time%cfl,cfl=time%cfl)
+       call lp%get_cfl(time%dt,cflc=time%cfl)
        call fs%get_cfl(time%dt,cfl); time%cfl=max(time%cfl,cfl)
        call time%adjust_dt()
        call time%increment()
@@ -594,19 +547,41 @@ contains
        fs%Vold=fs%V; fs%rhoVold=fs%rhoV
        fs%Wold=fs%W; fs%rhoWold=fs%rhoW
 
-       ! Get fluid stress (include mean body force from mfr forcing)
+       ! Particle update
        wt_lpt%time_in=parallel_time()
-       call fs%get_div_stress(resU,resV,resW)
-       resU=resU+bforce
-
-       ! Collide and advance particles
-       call lp%collide(dt=time%dtmid,Gib=G,Nxib=Gnorm(1,:,:,:),Nyib=Gnorm(2,:,:,:),Nzib=Gnorm(3,:,:,:))
-       call lp%advance(dt=time%dtmid,U=fs%U,V=fs%V,W=fs%W,rho=rho0,visc=fs%visc,stress_x=resU,stress_y=resV,stress_z=resW,&
-            srcU=srcUlp,srcV=srcVlp,srcW=srcWlp)
-
-       ! Update density based on particle volume fraction
-       fs%rho=rho*(1.0_WP-lp%VF)
-       dRHOdt=(fs%RHO-fs%RHOold)/time%dtmid
+       lpt: block
+         real(WP) :: dt_done,mydt
+         ! Get fluid stress
+         call fs%get_div_stress(resU,resV,resW)
+         resU=resU+bforce
+         ! Zero-out LPT source terms
+         srcUlp=0.0_WP; srcVlp=0.0_WP; srcWlp=0.0_WP
+         ! Sub-iteratore
+         call lp%get_cfl(lp_dt,cflc=cfl,cfl=cfl)
+         if (cfl.gt.0.0_WP) lp_dt=min(lp_dt*time%cflmax/cfl,lp_dt_max)
+         dt_done=0.0_WP
+         do while (dt_done.lt.time%dtmid)
+            ! Decide the timestep size
+            mydt=min(lp_dt,time%dtmid-dt_done)
+            ! Collide and advance particles
+            call lp%collide(dt=mydt,Gib=G,Nxib=Gnorm(1,:,:,:),Nyib=Gnorm(2,:,:,:),Nzib=Gnorm(3,:,:,:))
+            call lp%advance(dt=mydt,U=fs%U,V=fs%V,W=fs%W,rho=rho0,visc=fs%visc,stress_x=resU,stress_y=resV,stress_z=resW,&
+                 srcU=tmp1,srcV=tmp2,srcW=tmp3)
+            srcUlp=srcUlp+tmp1
+            srcVlp=srcVlp+tmp2
+            srcWlp=srcWlp+tmp3
+            ! Increment
+            dt_done=dt_done+mydt
+         end do
+         ! Update density based on particle volume fraction
+         fs%rho=rho*(1.0_WP-lp%VF)
+         dRHOdt=(fs%RHO-fs%RHOold)/time%dtmid
+         ! Compute PTKE and store source terms
+         call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rho0,srcU=tmp1,srcV=tmp2,srcW=tmp3)
+         srcUlp=srcUlp+tmp1
+         srcVlp=srcVlp+tmp2
+         srcWlp=srcWlp+tmp3
+       end block lpt
        wt_lpt%time=wt_lpt%time+parallel_time()-wt_lpt%time_in
 
        ! Perform sub-iterations
@@ -650,19 +625,14 @@ contains
           ! Apply direct forcing to enforce BC at the pipe walls
           ibm_correction: block
             integer :: i,j,k
-            real(WP) :: VFx,VFy,VFz,RHOx,RHOy,RHOz
+            real(WP) :: VFx,VFy,VFz
             do k=fs%cfg%kmin_,fs%cfg%kmax_
                do j=fs%cfg%jmin_,fs%cfg%jmax_
                   do i=fs%cfg%imin_,fs%cfg%imax_
-                     VFx=get_VF(i,j,k,'U')
-                     VFy=get_VF(i,j,k,'V')
-                     VFz=get_VF(i,j,k,'W')
-                     RHOx=sum(fs%itpr_x(:,i,j,k)*fs%rho(i-1:i,j,k))
-                     RHOy=sum(fs%itpr_y(:,i,j,k)*fs%rho(i,j-1:j,k))
-                     RHOz=sum(fs%itpr_z(:,i,j,k)*fs%rho(i,j,k-1:k))
-                     resU(i,j,k)=resU(i,j,k)-(1.0_WP-VFx)*RHOx*fs%U(i,j,k)
-                     resV(i,j,k)=resV(i,j,k)-(1.0_WP-VFy)*RHOy*fs%V(i,j,k)
-                     resW(i,j,k)=resW(i,j,k)-(1.0_WP-VFz)*RHOz*fs%W(i,j,k)
+                     VFx=get_VF(i,j,k,'U'); VFy=get_VF(i,j,k,'V'); VFz=get_VF(i,j,k,'W')
+                     resU(i,j,k)=resU(i,j,k)-(1.0_WP-VFx)*sum(fs%itpr_x(:,i,j,k)*fs%rho(i-1:i,j,k))*fs%U(i,j,k)
+                     resV(i,j,k)=resV(i,j,k)-(1.0_WP-VFy)*sum(fs%itpr_y(:,i,j,k)*fs%rho(i,j-1:j,k))*fs%V(i,j,k)
+                     resW(i,j,k)=resW(i,j,k)-(1.0_WP-VFz)*sum(fs%itpr_z(:,i,j,k)*fs%rho(i,j,k-1:k))*fs%W(i,j,k)
                   end do
                end do
             end do
@@ -683,26 +653,22 @@ contains
           fs%V=2.0_WP*fs%V-fs%Vold+resV
           fs%W=2.0_WP*fs%W-fs%Wold+resW
 
-!!$          ! Apply direct forcing to enforce BC at the pipe walls
-!!$          ibm_correction: block
+!!$          ! Apply IB direct forcing to enforce BC at the pipe walls
+!!$          ibforcing: block
 !!$            integer :: i,j,k
-!!$            real(WP) :: VFx,VFy,VFz
 !!$            do k=fs%cfg%kmin_,fs%cfg%kmax_
 !!$               do j=fs%cfg%jmin_,fs%cfg%jmax_
 !!$                  do i=fs%cfg%imin_,fs%cfg%imax_
-!!$                     VFx=get_VF(i,j,k,'U')
-!!$                     VFy=get_VF(i,j,k,'V')
-!!$                     VFz=get_VF(i,j,k,'W')
-!!$                     fs%U(i,j,k)=fs%U(i,j,k)*VFx
-!!$                     fs%V(i,j,k)=fs%V(i,j,k)*VFy
-!!$                     fs%W(i,j,k)=fs%W(i,j,k)*VFz
+!!$                     fs%U(i,j,k)=get_VF(i,j,k,'U')*fs%U(i,j,k)
+!!$                     fs%V(i,j,k)=get_VF(i,j,k,'V')*fs%V(i,j,k)
+!!$                     fs%W(i,j,k)=get_VF(i,j,k,'W')*fs%W(i,j,k)
 !!$                  end do
 !!$               end do
 !!$            end do
 !!$            call fs%cfg%sync(fs%U)
 !!$            call fs%cfg%sync(fs%V)
 !!$            call fs%cfg%sync(fs%W)
-!!$          end block ibm_correction
+!!$          end block ibforcing
 
           ! Apply other boundary conditions and update momentum
           call fs%apply_bcond(time%tmid,time%dtmid)
@@ -756,9 +722,6 @@ contains
           call ens_out%write_data(time%t)
        end if
 
-       ! Specialized post-processing
-       if (ppevt%occurs()) call postproc()
-
        ! Perform and output monitoring
        call fs%get_max()
        call lp%get_max()
@@ -786,8 +749,6 @@ contains
             character(len=str_medium) :: timestamp
             ! Prefix for files
             write(timestamp,'(es12.5)') time%t
-            ! Prepare a new directory
-            if (fs%cfg%amRoot) call execute_command_line('mkdir -p restart')
             ! Populate df and write it
             call df%pushval(name='t' ,val=time%t     )
             call df%pushval(name='dt',val=time%dt    )
@@ -818,7 +779,7 @@ contains
     ! timetracker
 
     ! Deallocate work arrays
-    deallocate(resU,resV,resW,srcUlp,srcVlp,srcWlp,Ui,Vi,Wi,dRHOdt,G,Gnorm)
+    deallocate(resU,resV,resW,srcUlp,srcVlp,srcWlp,Ui,Vi,Wi,dRHOdt,G,Gnorm,tmp1,tmp2,tmp3)
 
   end subroutine simulation_final
 
