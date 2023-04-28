@@ -131,7 +131,7 @@ module vfs_class
       integer, dimension(:,:,:), allocatable :: vmask     !< Integer array used for enforcing bconds - for vertices
       
       ! Monitoring quantities
-      real(WP) :: VFmax,VFmin,VFint                       !< Maximum, minimum, and integral volume fraction
+      real(WP) :: VFmax,VFmin,VFint,SDint                 !< Maximum, minimum, and integral volume fraction and surface density
 
       ! Old arrays that are needed for the compressible MAST solver
       real(WP), dimension(:,:,:,:), allocatable :: Lbaryold  !< Liquid barycenter
@@ -569,20 +569,14 @@ contains
    
    !> Add a boundary condition
    subroutine add_bcond(this,name,type,locator,dir)
-      use string,   only: lowercase
-      use messager, only: die
+      use string,         only: lowercase
+      use messager,       only: die
+      use iterator_class, only: locator_ftype
       implicit none
       class(vfs), intent(inout) :: this
       character(len=*), intent(in) :: name
       integer,  intent(in) :: type
-      external :: locator
-      interface
-         logical function locator(pargrid,ind1,ind2,ind3)
-            use pgrid_class, only: pgrid
-            class(pgrid), intent(in) :: pargrid
-            integer, intent(in) :: ind1,ind2,ind3
-         end function locator
-      end interface
+      procedure(locator_ftype) :: locator
       character(len=2), optional :: dir
       type(bcond), pointer :: new_bc
       integer :: i,j,k,n
@@ -2511,6 +2505,7 @@ contains
       
    end subroutine reset_volume_moments
    
+
    ! Reset only moments, leave VF unchanged
    subroutine reset_moments(this)
       implicit none
@@ -2949,6 +2944,7 @@ contains
       my_VFmax=maxval(this%VF); call MPI_ALLREDUCE(my_VFmax,this%VFmax,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
       my_VFmin=minval(this%VF); call MPI_ALLREDUCE(my_VFmin,this%VFmin,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr)
       call this%cfg%integrate(this%VF,integral=this%VFint)
+      call this%cfg%integrate(this%SD,integral=this%SDint)
    end subroutine get_max
    
    
