@@ -5,6 +5,7 @@ module lpt_class
   use string,         only: str_medium
   use config_class,   only: config
   use diag_class,     only: diag
+  use ddadi_class,    only: ddadi
   use vdscalar_class, only: vdscalar
   use mpi_f08,        only: MPI_Datatype,MPI_INTEGER8,MPI_INTEGER,MPI_DOUBLE_PRECISION
   implicit none
@@ -55,6 +56,7 @@ module lpt_class
      class(config), pointer :: cfg                       !< This is the config the solver is build for
 
      type(diag) :: tridiag                               !< Tridiagonal solver for implicit filter
+     type(ddadi) :: implicit                             !< Implicit solver for filtering
 
      ! This is the name of the solver
      character(len=str_medium) :: name='UNNAMED_LPT'     !< Solver name (default=UNNAMED_LPT)
@@ -71,6 +73,7 @@ module lpt_class
 
      ! CFL numbers
      real(WP) :: CFLp_x,CFLp_y,CFLp_z,CFL_col            !< CFL numbers
+     real(WP) :: CFLpt_x,CFLpt_y,CFLpt_z                 !< CFL numbers
 
      ! Particle density
      real(WP) :: rho                                     !< Density of particle
@@ -82,7 +85,6 @@ module lpt_class
 
      ! Solver parameters
      real(WP) :: nstep=1                                 !< Number of substeps (default=1)
-     character(len=str_medium), public :: drag_model     !< Drag model
      logical :: use_lift=.false.                         !< Compute lift force on particles
      character(len=str_medium), public :: ads_model      !< Adsorption model
 
@@ -112,6 +114,7 @@ module lpt_class
      real(WP) :: VFmin,VFmax,VFmean,VFvar                !< Volume fraction info
      real(WP) :: Mcmin,Mcmax,Mcmean                      !< Particle CO2 info
      real(WP) :: dmin,dmax,dmean,dvar                    !< Diameter info
+     real(WP) :: Tmin,Tmax,Tmean,Tvar                    !< Temperature info
      real(WP) :: Umin,Umax,Umean,Uvar                    !< U velocity info
      real(WP) :: Vmin,Vmax,Vmean,Vvar                    !< V velocity info
      real(WP) :: Wmin,Wmax,Wmean,Wvar                    !< W velocity info
@@ -120,8 +123,6 @@ module lpt_class
 
      ! Particle volume fraction
      real(WP), dimension(:,:,:), allocatable :: VF       !< Particle volume fraction, cell-centered
-     real(WP), dimension(:,:,:), allocatable :: Tf
-     real(WP), dimension(:,:,:), allocatable :: YCO2f
 
      ! Filtering operation
      logical :: implicit_filter                          !< Solve implicitly
@@ -173,16 +174,13 @@ contains
     type(lpt) :: self
     class(config), target, intent(in) :: cfg
     character(len=*), optional :: name
-    integer :: i,j,k
+    integer :: i,j,k,l
 
     ! Set the name for the solver
     if (present(name)) self%name=trim(adjustl(name))
 
     ! Point to pgrid object
     self%cfg=>cfg
-
-    ! Create tridiagonal solver object
-    self%tridiag=diag(cfg=self%cfg,name='Tridiagonal',n=3)
 
     ! Allocate variables
     allocate(self%np_proc(1:self%cfg%nproc)); self%np_proc=0
@@ -197,17 +195,6 @@ contains
     allocate(self%VF  (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%VF=0.0_WP
     allocate(self%ptke(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%ptke=0.0_WP
     allocate(self%diff_pt(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%diff_pt=0.0_WP
-    allocate(self%Tf  (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%VF=0.0_WP
-    allocate(self%YCO2f  (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%VF=0.0_WP
-
-    ! Set filter width to zero by default
-    self%filter_width=0.0_WP
-
-    ! Solve implicitly by default
-    self%implicit_filter=.true.
-
-    ! Set default drag
-    self%drag_model='Schiller-Naumann'
 
     ! Zero friction by default
     self%mu_f=0.0_WP
@@ -277,6 +264,26 @@ contains
              if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i-1,j,k).eq.0.0_WP) self%grd_x(:,i,j,k)=0.0_WP
              if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i,j-1,k).eq.0.0_WP) self%grd_y(:,i,j,k)=0.0_WP
              if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i,j,k-1).eq.0.0_WP) self%grd_z(:,i,j,k)=0.0_WP
+             ! if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_x(:,i,j,k)=0.0_WP
+             ! if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_y(:,i,j,k)=0.0_WP
+             ! if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_z(:,i,j,k)=0.0_WP
+          end do
+       end do
+    end do
+
+    ! Adjust interpolation coefficients to cell faces
+    do k=self%cfg%kmin_,self%cfg%kmax_+1
+       do j=self%cfg%jmin_,self%cfg%jmax_+1
+          do i=self%cfg%imin_,self%cfg%imax_+1
+             ! Linear interpolation in x
+             if (self%cfg%VF(i,j,k).eq.1.and.self%cfg%VF(i-1,j,k).lt.1) self%itpr_x(:,i,j,k)=[0.0_WP,1.0_WP]
+             if (self%cfg%VF(i,j,k).lt.1.and.self%cfg%VF(i-1,j,k).eq.1) self%itpr_x(:,i,j,k)=[1.0_WP,0.0_WP]
+             ! Linear interpolation in y
+             if (self%cfg%VF(i,j,k).eq.1.and.self%cfg%VF(i,j-1,k).lt.1) self%itpr_y(:,i,j,k)=[0.0_WP,1.0_WP]
+             if (self%cfg%VF(i,j,k).lt.1.and.self%cfg%VF(i,j-1,k).eq.1) self%itpr_y(:,i,j,k)=[1.0_WP,0.0_WP]
+             ! Linear interpolation in z
+             if (self%cfg%VF(i,j,k).eq.1.and.self%cfg%VF(i,j,k-1).lt.1) self%itpr_z(:,i,j,k)=[0.0_WP,1.0_WP]
+             if (self%cfg%VF(i,j,k).lt.1.and.self%cfg%VF(i,j,k-1).eq.1) self%itpr_z(:,i,j,k)=[1.0_WP,0.0_WP]
           end do
        end do
     end do
@@ -295,6 +302,23 @@ contains
        self%grd_z=0.0_WP
     end if
 
+    ! Create implicit solver object for filtering
+    self%implicit=ddadi(cfg=self%cfg,name='Filter',nst=7)
+    self%implicit%stc(1,:)=[ 0, 0, 0]
+    self%implicit%stc(2,:)=[+1, 0, 0]
+    self%implicit%stc(3,:)=[-1, 0, 0]
+    self%implicit%stc(4,:)=[ 0,+1, 0]
+    self%implicit%stc(5,:)=[ 0,-1, 0]
+    self%implicit%stc(6,:)=[ 0, 0,+1]
+    self%implicit%stc(7,:)=[ 0, 0,-1]
+    call self%implicit%init()
+
+    ! Set filter width to zero by default
+    self%filter_width=0.0_WP
+
+    ! Solve implicitly by default
+    self%implicit_filter=.true.
+
     ! Generate a wall distance/norm function
     allocate(self%Wdist(  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_))
     allocate(self%Wnorm(3,self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_))
@@ -311,65 +335,63 @@ contains
           end do
        end do
     end do
-    ! Second pass to compute local distance
-    do k=self%cfg%kmino_,self%cfg%kmaxo_
-       do j=self%cfg%jmino_,self%cfg%jmaxo_
-          do i=self%cfg%imino_+1,self%cfg%imaxo_
-             if (self%Wdist(i,j,k)*self%Wdist(i-1,j,k).lt.0.0_WP) then
-                ! There is a wall at x(i)
-                if (abs(self%cfg%xm(i  )-self%cfg%x(i)).lt.abs(self%Wdist(i  ,j,k))) then
-                   self%Wdist(i  ,j,k)=sign(self%cfg%xm(i  )-self%cfg%x(i),self%Wdist(i  ,j,k))
-                   self%Wnorm(:,i  ,j,k)=[self%cfg%VF(i,j,k)-self%cfg%VF(i-1,j,k),0.0_WP,0.0_WP]
+    ! Second pass to compute local distance (get 2 closest cells)
+    do l=1,2
+       do k=self%cfg%kmino_,self%cfg%kmaxo_
+          do j=self%cfg%jmino_,self%cfg%jmaxo_
+             do i=self%cfg%imino_+l,self%cfg%imaxo_
+                if (self%Wdist(i,j,k)*self%Wdist(i-l,j,k).lt.0.0_WP) then
+                   ! There is a wall at x(i)
+                   if (abs(self%cfg%xm(i  )-self%cfg%x(i-l+1)).lt.abs(self%Wdist(i  ,j,k))) then
+                      self%Wdist(i  ,j,k)=sign(self%cfg%xm(i  )-self%cfg%x(i-l+1),self%Wdist(i  ,j,k))
+                      self%Wnorm(:,i  ,j,k)=[self%cfg%VF(i,j,k)-self%cfg%VF(i-l,j,k),0.0_WP,0.0_WP]
+                   end if
+                   if (abs(self%cfg%xm(i-l)-self%cfg%x(i)).lt.abs(self%Wdist(i-l,j,k))) then
+                      self%Wdist(i-l,j,k)=sign(self%cfg%xm(i-l)-self%cfg%x(i),self%Wdist(i-l,j,k))
+                      self%Wnorm(:,i-l,j,k)=[self%cfg%VF(i,j,k)-self%cfg%VF(i-l,j,k),0.0_WP,0.0_WP]
+                   end if
                 end if
-                if (abs(self%cfg%xm(i-1)-self%cfg%x(i)).lt.abs(self%Wdist(i-1,j,k))) then
-                   self%Wdist(i-1,j,k)=sign(self%cfg%xm(i-1)-self%cfg%x(i),self%Wdist(i-1,j,k))
-                   self%Wnorm(:,i-1,j,k)=[self%cfg%VF(i,j,k)-self%cfg%VF(i-1,j,k),0.0_WP,0.0_WP]
+             end do
+          end do
+       end do
+       do k=self%cfg%kmino_,self%cfg%kmaxo_
+          do j=self%cfg%jmino_+l,self%cfg%jmaxo_
+             do i=self%cfg%imino_,self%cfg%imaxo_
+                if (self%Wdist(i,j,k)*self%Wdist(i,j-l,k).lt.0.0_WP) then
+                   ! There is a wall at y(j)
+                   if (abs(self%cfg%ym(j  )-self%cfg%y(j-l+1)).lt.abs(self%Wdist(i,j  ,k))) then
+                      self%Wdist(i,j  ,k)=sign(self%cfg%ym(j  )-self%cfg%y(j-l+1),self%Wdist(i,j  ,k))
+                      self%Wnorm(:,i,j  ,k)=[0.0_WP,self%cfg%VF(i,j,k)-self%cfg%VF(i,j-l,k),0.0_WP]
+                   end if
+                   if (abs(self%cfg%ym(j-l)-self%cfg%y(j)).lt.abs(self%Wdist(i,j-l,k))) then
+                      self%Wdist(i,j-l,k)=sign(self%cfg%ym(j-l)-self%cfg%y(j),self%Wdist(i,j-l,k))
+                      self%Wnorm(:,i,j-l,k)=[0.0_WP,self%cfg%VF(i,j,k)-self%cfg%VF(i,j-l,k),0.0_WP]
+                   end if
                 end if
-             end if
+             end do
+          end do
+       end do
+       do k=self%cfg%kmino_+l,self%cfg%kmaxo_
+          do j=self%cfg%jmino_,self%cfg%jmaxo_
+             do i=self%cfg%imino_,self%cfg%imaxo_
+                if (self%Wdist(i,j,k)*self%Wdist(i,j,k-l).lt.0.0_WP) then
+                   ! There is a wall at z(k)
+                   if (abs(self%cfg%zm(k  )-self%cfg%z(k-l+1)).lt.abs(self%Wdist(i,j,k  ))) then
+                      self%Wdist(i,j,k  )=sign(self%cfg%zm(k  )-self%cfg%z(k-l+1),self%Wdist(i,j,k  ))
+                      self%Wnorm(:,i,j,k  )=[0.0_WP,0.0_WP,self%cfg%VF(i,j,k)-self%cfg%VF(i,j,k-l)]
+                   end if
+                   if (abs(self%cfg%zm(k-l)-self%cfg%z(k)).lt.abs(self%Wdist(i,j,k-l))) then
+                      self%Wdist(i,j,k-l)=sign(self%cfg%zm(k-l)-self%cfg%z(k),self%Wdist(i,j,k-l))
+                      self%Wnorm(:,i,j,k-l)=[0.0_WP,0.0_WP,self%cfg%VF(i,j,k)-self%cfg%VF(i,j,k-l)]
+                   end if
+                end if
+             end do
           end do
        end do
     end do
     call self%cfg%sync(self%Wdist)
     call self%cfg%sync(self%Wnorm)
-    do k=self%cfg%kmino_,self%cfg%kmaxo_
-       do j=self%cfg%jmino_+1,self%cfg%jmaxo_
-          do i=self%cfg%imino_,self%cfg%imaxo_
-             if (self%Wdist(i,j,k)*self%Wdist(i,j-1,k).lt.0.0_WP) then
-                ! There is a wall at y(j)
-                if (abs(self%cfg%ym(j  )-self%cfg%y(j)).lt.abs(self%Wdist(i,j  ,k))) then
-                   self%Wdist(i,j  ,k)=sign(self%cfg%ym(j  )-self%cfg%y(j),self%Wdist(i,j  ,k))
-                   self%Wnorm(:,i,j  ,k)=[0.0_WP,self%cfg%VF(i,j,k)-self%cfg%VF(i,j-1,k),0.0_WP]
-                end if
-                if (abs(self%cfg%ym(j-1)-self%cfg%y(j)).lt.abs(self%Wdist(i,j-1,k))) then
-                   self%Wdist(i,j-1,k)=sign(self%cfg%ym(j-1)-self%cfg%y(j),self%Wdist(i,j-1,k))
-                   self%Wnorm(:,i,j-1,k)=[0.0_WP,self%cfg%VF(i,j,k)-self%cfg%VF(i,j-1,k),0.0_WP]
-                end if
-             end if
-          end do
-       end do
-    end do
-    call self%cfg%sync(self%Wdist)
-    call self%cfg%sync(self%Wnorm)
-    do k=self%cfg%kmino_+1,self%cfg%kmaxo_
-       do j=self%cfg%jmino_,self%cfg%jmaxo_
-          do i=self%cfg%imino_,self%cfg%imaxo_
-             if (self%Wdist(i,j,k)*self%Wdist(i,j,k-1).lt.0.0_WP) then
-                ! There is a wall at z(k)
-                if (abs(self%cfg%zm(k  )-self%cfg%z(k)).lt.abs(self%Wdist(i,j,k  ))) then
-                   self%Wdist(i,j,k  )=sign(self%cfg%zm(k  )-self%cfg%z(k),self%Wdist(i,j,k  ))
-                   self%Wnorm(:,i,j,k  )=[0.0_WP,0.0_WP,self%cfg%VF(i,j,k)-self%cfg%VF(i,j,k-1)]
-                end if
-                if (abs(self%cfg%zm(k-1)-self%cfg%z(k)).lt.abs(self%Wdist(i,j,k-1))) then
-                   self%Wdist(i,j,k-1)=sign(self%cfg%zm(k-1)-self%cfg%z(k),self%Wdist(i,j,k-1))
-                   self%Wnorm(:,i,j,k-1)=[0.0_WP,0.0_WP,self%cfg%VF(i,j,k)-self%cfg%VF(i,j,k-1)]
-                end if
-             end if
-          end do
-       end do
-    end do
-    call self%cfg%sync(self%Wdist)
-    call self%cfg%sync(self%Wnorm)
-
+    
     ! Log/screen output
     logging: block
       use, intrinsic :: iso_fortran_env, only: output_unit
@@ -483,7 +505,7 @@ contains
          v1=this%p(i1)%vel
          w1=this%p(i1)%angVel
          d1=this%p(i1)%d
-         m1=this%rho*Pi/6.0_WP*d1**3
+         m1=this%rho*Pi/6.0_WP*d1**3+this%p(i1)%mc
 
          ! First collide with walls
          d12=this%cfg%get_scalar(pos=this%p(i1)%pos,i0=this%p(i1)%ind(1),j0=this%p(i1)%ind(2),k0=this%p(i1)%ind(3),S=this%Wdist,bc='d')
@@ -535,14 +557,14 @@ contains
                         v2=this%p(i2)%vel
                         w2=this%p(i2)%angVel
                         d2=this%p(i2)%d
-                        m2=this%rho*Pi/6.0_WP*d2**3
+                        m2=this%rho*Pi/6.0_WP*d2**3+this%p(i2)%mc
                      else if (i2.lt.0) then
                         i2=-i2
                         r2=this%g(i2)%pos
                         v2=this%g(i2)%vel
                         w2=this%g(i2)%angVel
                         d2=this%g(i2)%d
-                        m2=this%rho*Pi/6.0_WP*d2**3
+                        m2=this%rho*Pi/6.0_WP*d2**3+this%g(i2)%mc
                      end if
 
                      ! Compute relative information
@@ -618,7 +640,7 @@ contains
   !> Advance the particle equations by a specified time step dt
   !> p%id=0 => no coll, no solve
   !> p%id=-1=> no coll, no move
-  subroutine advance(this,dt,U,V,W,rho,visc,diff,stress_x,stress_y,stress_z,T,YCO2,srcU,srcV,srcW,srcE,srcSC,fCp)
+  subroutine advance(this,dt,U,V,W,rho,visc,diff,stress_x,stress_y,stress_z,T,YCO2,srcU,srcV,srcW,srcSC,fCp)
     use mpi_f08, only : MPI_SUM,MPI_INTEGER
     use mathtools, only: Pi
     implicit none
@@ -633,16 +655,15 @@ contains
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_x  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_y  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_z  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: T      !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: YCO2   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: T         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: YCO2      !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcU   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcV   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcW   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcE   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_,this%nscalar), intent(inout), optional :: srcSC
-    real(WP), intent(inout), optional :: fCp
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:,:), intent(inout), optional :: srcSC
+    real(WP), intent(inout) :: fCp
     integer :: i,j,k,ierr
-    real(WP) :: mydt,dt_done,deng,Ip,dmdt,dm,dTdt,dTemp,mass
+    real(WP) :: mydt,dt_done,Ip,dmdt,dm,dTdt,dTemp,mass,fT
     real(WP), dimension(3) :: acc,dmom
     type(part) :: myp,pold
 
@@ -650,15 +671,7 @@ contains
     if (present(srcU)) srcU=0.0_WP
     if (present(srcV)) srcV=0.0_WP
     if (present(srcW)) srcW=0.0_WP
-    if (present(srcE)) srcE=0.0_WP
     if (present(srcSC)) srcSC=0.0_WP
-    
-    this%Tf = T
-    this%YCO2f = YCO2
-    
-    ! Filter fields
-    call this%filter(this%Tf)
-    call this%filter(this%YCO2f)
     
     ! Zero out number of particles removed
     this%np_out=0
@@ -679,7 +692,7 @@ contains
           ! Particle moment of inertia per unit mass
           Ip = 0.1_WP*myp%d**2
           ! Advance with Euler prediction
-          call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,diff=diff,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=this%Tf,YCO2=this%YCO2f,&
+          call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,diff=diff,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=T,YCO2=YCO2,&
                p=myp,acc=acc,opt_dt=myp%dt,dmdt=dmdt,dTdt=dTdt,fCp=fCp)
           myp%pos=pold%pos+0.5_WP*mydt*myp%vel
           myp%vel=pold%vel+0.5_WP*mydt*(acc+this%gravity+myp%Acol)
@@ -687,7 +700,7 @@ contains
           myp%Mc=pold%Mc+0.5_WP*mydt*dmdt
           myp%T=pold%T+0.5_WP*mydt*dTdt
           ! Correct with midpoint rule
-          call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,diff=diff,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=this%Tf,YCO2=this%YCO2f,&
+          call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,diff=diff,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=T,YCO2=YCO2,&
                p=myp,acc=acc,opt_dt=myp%dt,dmdt=dmdt,dTdt=dTdt,fCp=fCp)
           myp%pos=pold%pos+mydt*myp%vel
           myp%vel=pold%vel+mydt*(acc+this%gravity+myp%Acol)
@@ -698,16 +711,14 @@ contains
           ! Send source term back to the mesh
           mass=this%rho*Pi/6.0_WP*myp%d**3+myp%Mc
           dm=mydt*dmdt
-          dTemp=(mass*this%pCp*dTdt*mydt+dm*myp%T*fCp)/fCp
+          dTemp=(mass*this%pCp*dTdt*mydt+dm*myp%T*this%pCp)/fCp
           dmom=mydt*acc*mass+myp%vel*dm
-          deng=sum(dmom*myp%vel)
           if (this%cfg%nx.gt.1.and.present(srcU)) call this%cfg%set_scalar(Sp=-dmom(1),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcU,bc='n')
           if (this%cfg%ny.gt.1.and.present(srcV)) call this%cfg%set_scalar(Sp=-dmom(2),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcV,bc='n')
           if (this%cfg%nz.gt.1.and.present(srcW)) call this%cfg%set_scalar(Sp=-dmom(3),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcW,bc='n')
-          if (present(srcE))                      call this%cfg%set_scalar(Sp=-deng   ,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcE,bc='n')
           if (present(srcSC)) then
-             call this%cfg%set_scalar(Sp=-dm   ,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcSC(:,:,:,this%ind_CO2),bc='n')
              call this%cfg%set_scalar(Sp=-dTemp,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcSC(:,:,:,this%ind_T  ),bc='n')
+             call this%cfg%set_scalar(Sp=-dm   ,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcSC(:,:,:,this%ind_CO2),bc='n')
           end if
           
           ! Increment
@@ -726,7 +737,12 @@ contains
        ! Count number of particles removed
        if (myp%flag.eq.1) this%np_out=this%np_out+1
        ! Copy back to particle
-       if (myp%id.ne.-1) this%p(i)=myp
+       if (myp%id.eq.-1) then
+          this%p(i)%T=myp%T
+          this%p(i)%Mc=myp%Mc
+       else
+          this%p(i)=myp
+       end if
     end do
     ! Communicate particles
     call this%sync()
@@ -743,9 +759,6 @@ contains
     end if
     if (present(srcW)) then
        srcW=srcW/this%cfg%vol; call this%cfg%syncsum(srcW); call this%filter(srcW)
-    end if
-    if (present(srcE)) then
-       srcE=srcE/this%cfg%vol; call this%cfg%syncsum(srcE); call this%filter(srcE)
     end if
     if (present(srcSC)) then
        do i=1,this%nscalar
@@ -775,6 +788,7 @@ contains
 
   !> Calculate RHS of the particle ODEs
   subroutine get_rhs(this,U,V,W,rho,visc,diff,stress_x,stress_y,stress_z,T,YCO2,p,acc,opt_dt,dmdt,dTdt,fCp)
+    use mathtools, only: Pi
     implicit none
     class(lpt), intent(inout) :: this
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: U         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
@@ -786,12 +800,12 @@ contains
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_x  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_y  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: stress_z  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: T  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: YCO2 !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: T         !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: YCO2      !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     type(part), intent(in) :: p
     real(WP), dimension(3), intent(out) :: acc
     real(WP), intent(out) :: opt_dt,dmdt,dTdt,fCp
-    real(WP) :: fvisc,fdiff,frho,pVF,fVF,fT,fYCO2,tau,Re
+    real(WP) :: fvisc,fdiff,frho,pVF,fVF,fT,fYCO2,rhop,tau,Re
     real(WP), dimension(3) :: fvel,fstress
 
     ! Interpolate fluid quantities to particle location
@@ -810,49 +824,38 @@ contains
       ! Interpolate the particle volume fraction to the particle location
       pVF=this%cfg%get_scalar(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),S=this%VF,bc='n')
       fVF=1.0_WP-pVF
-      ! Interpolate the fluid temperature to the particle location if present
-      if (present(T)) fT=this%cfg%get_scalar(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),S=T,bc='n')
+      ! Interpolate the fluid temperature to the particle location
+      fT=this%cfg%get_scalar(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),S=T,bc='n')
       ! Interpolate the CO2 mass fraction to the particle location
-      if (present(YCO2)) fYCO2=this%cfg%get_scalar(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),S=YCO2,bc='n')
+      fYCO2=this%cfg%get_scalar(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),S=YCO2,bc='n')
     end block interpolate
 
     ! Particle Reynolds number
     Re=frho*norm2(p%vel-fvel)*p%d/fvisc+epsilon(1.0_WP)
 
+    ! Effective particle density
+    rhop=this%rho+6.0_WP*p%mc/(pi*p%d**3)
+
     ! Particle response time
-    tau=this%rho*p%d**2/(18.0_WP*fvisc)
+    tau=rhop*p%d**2/(18.0_WP*fvisc)
 
     ! Compute acceleration due to drag
     compute_drag: block
       real(WP) :: corr,b1,b2
-      ! Drag correction
-      select case(trim(this%drag_model))
-      case('None','none')
-         corr=epsilon(1.0_WP)
-      case('Stokes')
-         corr=1.0_WP
-      case('Schiller-Naumann','Schiller Naumann','SN')
-         corr=1.0_WP+0.15_WP*Re**(0.687_WP)
-      case('Tenneti')
-         ! Tenneti and Subramaniam (2011)
-         b1=5.81_WP*pVF/fVF**3+0.48_WP*pVF**(1.0_WP/3.0_WP)/fVF**4
-         b2=pVF**3*Re*(0.95_WP+0.61_WP*pVF**3/fVF**2)
-         corr=fVF*(1.0_WP+0.15_WP*Re**(0.687_WP)/fVF**3+b1+b2)           
-      case('Khalloufi Capecelatro','KC')
-         !> Todo
-      case default
-         corr=1.0_WP
-      end select
+      ! Tenneti and Subramaniam (2011)
+      b1=5.81_WP*pVF/fVF**3+0.48_WP*pVF**(1.0_WP/3.0_WP)/fVF**4
+      b2=pVF**3*Re*(0.95_WP+0.61_WP*pVF**3/fVF**2)
+      corr=fVF*(1.0_WP+0.15_WP*Re**(0.687_WP)/fVF**3+b1+b2)           
       ! Return acceleration and optimal timestep size
-      acc=(fvel-p%vel)*corr/tau+fstress/this%rho
+      acc=(fvel-p%vel)*corr/tau+fstress/rhop
       opt_dt=tau/corr/real(this%nstep,WP)
     end block compute_drag
 
     ! Compute mass transfer
     mass_transfer: block
-      use mathtools, only: Pi
       use messager, only: die
-      real(WP) :: Cs,A_d,E_d,dS_d,dH_d,PCO2,Pg,k_d,Keq_d,Cc,dcdt
+      real(WP) :: Cs,A_d,E_d,dS_d,dH_d,PCO2,Pg,k_d,Keq_d,Cc,dcdt !Lee parameters
+      real(WP) :: qs,b_t,dH_t,b0_t,T0_t,th_t,th0_t,alpha_t,mc_s,k_t,k0_t,Ea_t,mc_clip !Bos parameters
       real(WP), parameter :: Rcst=8.314_WP     ! J/(mol.K)
       real(WP), parameter :: W_CO2=44.0095e-3_WP
       real(WP), parameter :: W_H2O=18.0153e-3_WP
@@ -886,8 +889,31 @@ contains
          
          ! Mass transfer
          dmdt=dcdt*Pi/6.0_WP*p%d**3*W_CO2
-         !dmdt=0.0_WP
 
+      case('BOS','Bos')
+         ! From Bos et al. Chemical Engineering Journal (2019)
+
+         ! Kinetic parameters
+         qs=3.4_WP ! mol CO2/kg sorbent
+         mc_s=qs*this%rho*W_CO2*(Pi/6.0_WP*p%d**3) ! kg CO2/sorbent particle
+         b0_t=93.0e-5_WP ! 1/Pa
+         dH_t=95.3e3_WP ! J/mol
+         T0_t=353.15_WP ! K
+         th0_t=0.37_WP ! dimensionless
+         alpha_t=0.33_WP ! dimensionless
+         k0_t=3.5e-2_WP ! mol/(kg*Pa*s)
+         Ea_t=15.2e3_WP ! J/mol
+
+         ! Temperature dependence
+         PCO2=fYCO2/W_CO2*frho*Rcst*fT
+         b_t=b0_t*exp(dH_t/(Rcst*T0_t)*(T0_t/p%T-1))
+         th_t=th0_t+alpha_t*(1-T0_t/p%T)
+         k_t=k0_t*exp(-Ea_t/(Rcst*p%T))
+         mc_clip=max(p%mc,0.0_WP)
+
+         ! Mass transfer
+         dmdt=this%rho*W_CO2*(Pi/6.0_WP*p%d**3)*k_t*((1-(mc_clip/mc_s)**th_t)**(1/th_t)*PCO2-mc_clip/(mc_s*b_t))
+         
       case('NONE','None')
          dmdt=0.0_WP
       case default
@@ -895,17 +921,18 @@ contains
       end select
     end block mass_transfer
 
+    ! TO DO Compute intraparticle effects
+
     ! Compute heat transfer
     compute_heat_transfer: block
       real(WP) :: Pr,Nu
       
-      fCp=1000.0_WP
+      !fCp=1000.0_WP
       Pr=fvisc/fdiff
       !Nu=(7.0_WP-10.0_WP*fVF+5.0_WP*fVF**2)*(1.0_WP+0.7_WP*Re**(0.2_WP)*Pr**(1.0_WP/3.0_WP))& ! Gunn (1978)
       !     + (1.33_WP-2.4_WP*fVF+1.2_WP*fVF**2)*Re**(0.7_WP)*Pr**(1.0_WP/3.0_WP)
       Nu=(-0.46_WP+1.77_WP*fVF+0.69_WP*fVF**2)/fVf**3+(1.37_WP-2.4_WP*fVf+1.2_WP*fVf**2)*Re**(0.7_WP)*Pr**(1.0_WP/3.0_WP) ! Sun (2015)
       dTdt=Nu*fCp*(fT-p%T)/(3.0_WP*Pr*this%pCp*tau)
-      !dTdt=0.0_WP
     end block compute_heat_transfer
 
   end subroutine get_rhs
@@ -959,8 +986,8 @@ contains
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcT   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcY   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), intent(inout), optional :: fCp
-    real(WP), dimension(:,:,:), allocatable :: slip_x,slip_y,slip_z,Re,dTdx,dTdy,dTdz,dYdx,dYdy,dYdz
-    real(WP), dimension(:,:,:,:), allocatable :: PTRS,PTHF,PTMF
+    real(WP), dimension(:,:,:), allocatable :: slip_x,slip_y,slip_z,Re
+    real(WP), dimension(:,:,:,:), allocatable :: PTRS,PTHF,PTMF,alpha
     real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
     integer :: i,j,k
     real(WP) :: Vp,frho,fvisc,pVF,Rep,b_par,b_perp,Nu,Pr,fVF,alpha_par,alpha_perp
@@ -990,67 +1017,9 @@ contains
        allocate(FY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
        allocate(FZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
     end if
+    if (present(srcT)) allocate(alpha(1:6,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
     if (present(srcT)) allocate(PTHF(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
     if (present(srcY)) allocate(PTMF(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-
-    ! Compute gradient of temperature
-    if (present(T)) then
-       allocate(dTdx(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_))
-       allocate(dTdy(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_))
-       allocate(dTdz(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_))
-       do k=this%cfg%kmin_,this%cfg%kmax_+1
-          do j=this%cfg%jmin_,this%cfg%jmax_+1
-             do i=this%cfg%imin_,this%cfg%imax_+1
-                FX(i,j,k) = sum(this%grd_x(:,i,j,k)*T(i-1:i,j,k))
-                FY(i,j,k) = sum(this%grd_y(:,i,j,k)*T(i,j-1:j,k))
-                FZ(i,j,k) = sum(this%grd_z(:,i,j,k)*T(i,j,k-1:k))
-             end do
-          end do
-       end do
-       call this%cfg%sync(FX)
-       call this%cfg%sync(FY)
-       call this%cfg%sync(FX)
-       ! Interpolate to the cell center
-       do k=this%cfg%kmin_,this%cfg%kmax_
-          do j=this%cfg%jmin_,this%cfg%jmax_
-             do i=this%cfg%imin_,this%cfg%imax_
-                dTdx(i,j,k) = 0.5_WP*(FX(i+1,j,k)+FX(i,j,k))
-                dTdy(i,j,k) = 0.5_WP*(FY(i,j+1,k)+FY(i,j,k))
-                dTdz(i,j,k) = 0.5_WP*(FZ(i,j,k+1)+FZ(i,j,k))
-             end do
-          end do
-       end do
-    end if
-
-    ! Compute gradient of mass fraction
-    if (present(Y)) then
-       allocate(dYdx(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_))
-       allocate(dYdy(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_))
-       allocate(dYdz(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_))
-       do k=this%cfg%kmin_,this%cfg%kmax_+1
-          do j=this%cfg%jmin_,this%cfg%jmax_+1
-             do i=this%cfg%imin_,this%cfg%imax_+1
-                FX(i,j,k) = sum(this%grd_x(:,i,j,k)*Y(i-1:i,j,k))
-                FY(i,j,k) = sum(this%grd_y(:,i,j,k)*Y(i,j-1:j,k))
-                FZ(i,j,k) = sum(this%grd_z(:,i,j,k)*Y(i,j,k-1:k))
-             end do
-          end do
-       end do
-       call this%cfg%sync(FX)
-       call this%cfg%sync(FY)
-       call this%cfg%sync(FX)
-       ! Interpolate to the cell center
-       do k=this%cfg%kmin_,this%cfg%kmax_
-          do j=this%cfg%jmin_,this%cfg%jmax_
-             do i=this%cfg%imin_,this%cfg%imax_
-                dYdx(i,j,k) = 0.5_WP*(FX(i+1,j,k)+FX(i,j,k))
-                dYdy(i,j,k) = 0.5_WP*(FY(i,j+1,k)+FY(i,j,k))
-                dYdz(i,j,k) = 0.5_WP*(FZ(i,j,k+1)+FZ(i,j,k))
-             end do
-          end do
-       end do
-    end if
-
 
     ! Loop over all particles
     do i=1,this%np_
@@ -1102,7 +1071,7 @@ contains
              slip(2)=slip_y(i,j,k)
              slip(3)=slip_z(i,j,k)
              Rep=Re(i,j,k)
-             pVF=this%VF(i,j,k)
+             pVF=this%VF(i,j,k)+epsilon(1.0_WP)
              fVF=1.0_WP-pVF
              
              ! Compute PTKE
@@ -1213,8 +1182,8 @@ contains
                 Nu=(-0.46_WP+1.77_WP*fVF+0.69_WP*fVF**2)/fVf**3+(1.37_WP-2.4_WP*fVf+1.2_WP*fVf**2)*Rep**(0.7_WP)*Pr**(1.0_WP/3.0_WP)
                 ! Pseudo-turbulent diffusivity
                 alpha_par=diff(i,j,k)*(2.0_WP*Rep*(Rep+1.4_WP)*Pr**2*exp(-0.002089_WP*Rep)/(3.0_WP*Pi*Nu)*&
-                     (fVF*(-5.11_WP*pVF+10.1_WP*pVF**2-10.85_WP*pVF**3)+1-exp(-10.96_WP*pVF))/&
-                     ((1.17_WP-0.2021*pVF**(1.0_WP/2.0_WP)+0.08568*pVF**(1.0_WP/4.0_WP))*fVF**2*(1.0_WP-1.6_WP*pVF*fVF-3.0_WP*pVF*fVF**4*exp(-Rep**0.4_WP*pVF))))
+                        (fVF*(-5.11_WP*pVF+10.1_WP*pVF**2-10.85_WP*pVF**3)+1-exp(-10.96_WP*pVF))/&
+                        ((1.17_WP*pVF-0.2021_WP*pVF**(1.0_WP/2.0_WP)+0.08568_WP*pVF**(1.0_WP/4.0_WP))*fVF**2*(1.0_WP-1.6_WP*pVF*fVF-3.0_WP*pVF*fVF**4*exp(-Rep**0.4_WP*pVF))))
                 this%diff_pt(i,j,k)=alpha_par
                 !  Assume isotropic in 2D
                 if (this%cfg%nx.eq.1) then
@@ -1259,22 +1228,55 @@ contains
                    alphaij(3,2) = temp(3,1)*Q(2,1) + temp(3,2)*Q(2,2) + temp(3,3)*Q(2,3)
                    alphaij(3,3) = temp(3,1)*Q(3,1) + temp(3,2)*Q(3,2) + temp(3,3)*Q(3,3)
                 end if
-                
-                ! PTHF
-                PTHF(1,i,j,k) = fVF*(alphaij(1,1)*dTdx(i,j,k)+alphaij(1,2)*dTdy(i,j,k)+alphaij(1,3)*dTdz(i,j,k))
-                PTHF(2,i,j,k) = fVF*(alphaij(2,1)*dTdx(i,j,k)+alphaij(2,2)*dTdy(i,j,k)+alphaij(2,3)*dTdz(i,j,k))
-                PTHF(3,i,j,k) = fVF*(alphaij(3,1)*dTdx(i,j,k)+alphaij(3,2)*dTdy(i,j,k)+alphaij(3,3)*dTdz(i,j,k))
-             end if
-             
-             ! PTMF
-             if (present(Y)) then
-                PTMF(1,i,j,k) = fVF*(alphaij(1,1)*dYdx(i,j,k)+alphaij(1,2)*dYdy(i,j,k)+alphaij(1,3)*dYdz(i,j,k))
-                PTMF(2,i,j,k) = fVF*(alphaij(2,1)*dYdx(i,j,k)+alphaij(2,2)*dYdy(i,j,k)+alphaij(2,3)*dYdz(i,j,k))
-                PTMF(3,i,j,k) = fVF*(alphaij(3,1)*dYdx(i,j,k)+alphaij(3,2)*dYdy(i,j,k)+alphaij(3,3)*dYdz(i,j,k))
+                ! Store alpha
+                alpha(1,i,j,k)=alphaij(1,1)
+                alpha(2,i,j,k)=alphaij(2,2)
+                alpha(3,i,j,k)=alphaij(3,3)
+                alpha(4,i,j,k)=alphaij(1,2)
+                alpha(5,i,j,k)=alphaij(3,2)
+                alpha(6,i,j,k)=alphaij(1,3)
              end if
           end do
        end do
     end do
+    ! Compute PTHF
+    if (present(T)) then
+       do k=this%cfg%kmin_,this%cfg%kmax_+1
+          do j=this%cfg%jmin_,this%cfg%jmax_+1
+             do i=this%cfg%imin_,this%cfg%imax_+1
+                PTHF(1,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(1,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*T(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(4,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*T(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(6,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*T(i,j,k-1:k)))
+                PTHF(2,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(4,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*T(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(2,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*T(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(5,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*T(i,j,k-1:k)))
+                PTHF(3,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(6,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*T(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(5,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*T(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(3,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*T(i,j,k-1:k)))
+             end do
+          end do
+       end do
+       call this%cfg%sync(PTHF)
+    end if
+    
+    if (present(Y)) then
+       do k=this%cfg%kmin_,this%cfg%kmax_+1
+          do j=this%cfg%jmin_,this%cfg%jmax_+1
+             do i=this%cfg%imin_,this%cfg%imax_+1
+                PTMF(1,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(1,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*Y(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(4,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*Y(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(6,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*Y(i,j,k-1:k)))
+                PTMF(2,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(4,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*Y(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(2,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*Y(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(5,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*Y(i,j,k-1:k)))
+                PTMF(3,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(6,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*Y(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(5,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*Y(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(3,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*Y(i,j,k-1:k)))
+             end do
+          end do
+       end do
+       call this%cfg%sync(PTMF)
+    end if
 
     ! Return source terms
     if (present(srcU)) then
@@ -1341,42 +1343,22 @@ contains
        call this%cfg%sync(srcW)
     end if
     if (present(srcT)) then
-       ! Interpolate PTHF to cell face
-       do k=this%cfg%kmin_,this%cfg%kmax_+1
-          do j=this%cfg%jmin_,this%cfg%jmax_+1
-             do i=this%cfg%imin_,this%cfg%imax_+1
-                FX(i,j,k)=sum(this%itpr_x(:,i,j,k)*PTHF(1,i-1:i,j,k))
-                FY(i,j,k)=sum(this%itpr_y(:,i,j,k)*PTHF(2,i,j-1:j,k))
-                FZ(i,j,k)=sum(this%itpr_z(:,i,j,k)*PTHF(3,i,j,k-1:k))
-             end do
-          end do
-       end do
        ! Take divergence
        do k=this%cfg%kmin_,this%cfg%kmax_
           do j=this%cfg%jmin_,this%cfg%jmax_
              do i=this%cfg%imin_,this%cfg%imax_
-                srcT(i,j,k)=-dt*(sum(this%div_x(:,i,j,k)*FX(i:i+1,j,k))+sum(this%div_y(:,i,j,k)*FY(i,j:j+1,k))+sum(this%div_z(:,i,j,k)*FZ(i,j,k:k+1)))
+                srcT(i,j,k)=dt*(sum(this%div_x(:,i,j,k)*PTHF(1,i:i+1,j,k))+sum(this%div_y(:,i,j,k)*PTHF(2,i,j:j+1,k))+sum(this%div_z(:,i,j,k)*PTHF(3,i,j,k:k+1)))
              end do
           end do
        end do
        call this%cfg%sync(srcT)
     end if
     if (present(srcY)) then
-       ! Interpolate PTMF to cell face
-       do k=this%cfg%kmin_,this%cfg%kmax_+1
-          do j=this%cfg%jmin_,this%cfg%jmax_+1
-             do i=this%cfg%imin_,this%cfg%imax_+1
-                FX(i,j,k)=sum(this%itpr_x(:,i,j,k)*PTMF(1,i-1:i,j,k))
-                FY(i,j,k)=sum(this%itpr_y(:,i,j,k)*PTMF(2,i,j-1:j,k))
-                FZ(i,j,k)=sum(this%itpr_z(:,i,j,k)*PTMF(3,i,j,k-1:k))
-             end do
-          end do
-       end do
        ! Take divergence
        do k=this%cfg%kmin_,this%cfg%kmax_
           do j=this%cfg%jmin_,this%cfg%jmax_
              do i=this%cfg%imin_,this%cfg%imax_
-                srcY(i,j,k)=-dt*(sum(this%div_x(:,i,j,k)*FX(i:i+1,j,k))+sum(this%div_y(:,i,j,k)*FY(i,j:j+1,k))+sum(this%div_z(:,i,j,k)*FZ(i,j,k:k+1)))
+                srcY(i,j,k)=dt*(sum(this%div_x(:,i,j,k)*PTMF(1,i:i+1,j,k))+sum(this%div_y(:,i,j,k)*PTMF(2,i,j:j+1,k))+sum(this%div_z(:,i,j,k)*PTMF(3,i,j,k:k+1)))
              end do
           end do
        end do
@@ -1388,13 +1370,8 @@ contains
     if (allocated(FX)) deallocate(FX)
     if (allocated(FY)) deallocate(FY)
     if (allocated(FZ)) deallocate(FZ)
-    if (allocated(dTdx)) deallocate(dTdx)
-    if (allocated(dTdy)) deallocate(dTdy)
-    if (allocated(dTdz)) deallocate(dTdz)
+    if (allocated(alpha)) deallocate(alpha)
     if (allocated(PTHF)) deallocate(PTHF)
-    if (allocated(dYdx)) deallocate(dYdx)
-    if (allocated(dYdy)) deallocate(dYdy)
-    if (allocated(dYdz)) deallocate(dYdz)
     if (allocated(PTMF)) deallocate(PTMF)
   end subroutine get_ptke
 
@@ -1435,56 +1412,38 @@ contains
     if (this%filter_width.le.0.0_WP) return
 
     ! Recompute filter coeff and number of explicit steps needed
-    filter_coeff=0.5_WP*(this%filter_width/(2.0_WP*sqrt(2.0_WP*log(2.0_WP))))**2
+    filter_coeff=max(this%filter_width**2-this%cfg%min_meshsize**2,0.0_WP)/(16.0_WP*log(2.0_WP))
 
-    if (this%implicit_filter) then  !< Apply filter implicitly via approximate factorization
-       ! Inverse in X-direction
-       do k=this%cfg%kmin_,this%cfg%kmax_
-          do j=this%cfg%jmin_,this%cfg%jmax_
-             do i=this%cfg%imin_,this%cfg%imax_
-                this%tridiag%Ax(j,k,i,-1) = - this%div_x(0,i,j,k) * filter_coeff * this%grd_x(-1,i,j,k)
-                this%tridiag%Ax(j,k,i, 0) = 1.0_WP - (this%div_x(0,i,j,k) * filter_coeff * this%grd_x(0,i,j,k) &
-                     + this%div_x(1,i,j,k) * filter_coeff * this%grd_x(-1,i+1,j,k))
-                this%tridiag%Ax(j,k,i,+1) = - this%div_x(1,i,j,k) * filter_coeff * this%grd_x(0,i+1,j,k)
-                this%tridiag%Rx(j,k,i) = A(i,j,k)
+    if (this%implicit_filter) then  !< Apply filter implicitly
+       if (.not.this%implicit%setup_done) then
+          ! Prepare diffusive operator (only need to do this once)
+          do k=this%cfg%kmin_,this%cfg%kmax_
+             do j=this%cfg%jmin_,this%cfg%jmax_
+                do i=this%cfg%imin_,this%cfg%imax_
+                   this%implicit%opr(1,i,j,k)=1.0_WP-(this%div_x(+1,i,j,k)*filter_coeff*this%grd_x(-1,i+1,j,k)+&
+                   &                                  this%div_x( 0,i,j,k)*filter_coeff*this%grd_x( 0,i  ,j,k)+&
+                   &                                  this%div_y(+1,i,j,k)*filter_coeff*this%grd_y(-1,i,j+1,k)+&
+                   &                                  this%div_y( 0,i,j,k)*filter_coeff*this%grd_y( 0,i,j  ,k)+&
+                   &                                  this%div_z(+1,i,j,k)*filter_coeff*this%grd_z(-1,i,j,k+1)+&
+                   &                                  this%div_z( 0,i,j,k)*filter_coeff*this%grd_z( 0,i,j,k  ))
+                   this%implicit%opr(2,i,j,k)=      -(this%div_x(+1,i,j,k)*filter_coeff*this%grd_x( 0,i+1,j,k))
+                   this%implicit%opr(3,i,j,k)=      -(this%div_x( 0,i,j,k)*filter_coeff*this%grd_x(-1,i  ,j,k))
+                   this%implicit%opr(4,i,j,k)=      -(this%div_y(+1,i,j,k)*filter_coeff*this%grd_y( 0,i,j+1,k))
+                   this%implicit%opr(5,i,j,k)=      -(this%div_y( 0,i,j,k)*filter_coeff*this%grd_y(-1,i,j  ,k))
+                   this%implicit%opr(6,i,j,k)=      -(this%div_z(+1,i,j,k)*filter_coeff*this%grd_z( 0,i,j,k+1))
+                   this%implicit%opr(7,i,j,k)=      -(this%div_z( 0,i,j,k)*filter_coeff*this%grd_z(-1,i,j,k  ))
+                end do
              end do
           end do
-       end do
-       call this%tridiag%linsol_x()         
-       ! Inverse in Y-direction
-       do k=this%cfg%kmin_,this%cfg%kmax_
-          do j=this%cfg%jmin_,this%cfg%jmax_
-             do i=this%cfg%imin_,this%cfg%imax_
-                this%tridiag%Ay(i,k,j,-1) = - this%div_y(0,i,j,k) * filter_coeff * this%grd_y(-1,i,j,k)
-                this%tridiag%Ay(i,k,j, 0) = 1.0_WP - (this%div_y(0,i,j,k)* filter_coeff * this%grd_y(0,i,j,k) &
-                     + this%div_y(1,i,j,k) * filter_coeff * this%grd_y(-1,i,j+1,k))
-                this%tridiag%Ay(i,k,j,+1) = - this%div_y(1,i,j,k) * filter_coeff * this%grd_y(0,i,j+1,k)
-                this%tridiag%Ry(i,k,j) = this%tridiag%Rx(j,k,i)
-             end do
-          end do
-       end do
-       call this%tridiag%linsol_y()
-       ! Inverse in Z-direction
-       do k=this%cfg%kmin_,this%cfg%kmax_
-          do j=this%cfg%jmin_,this%cfg%jmax_
-             do i=this%cfg%imin_,this%cfg%imax_
-                this%tridiag%Az(i,j,k,-1) = - this%div_z(0,i,j,k) * filter_coeff * this%grd_z(-1,i,j,k)
-                this%tridiag%Az(i,j,k, 0) = 1.0_WP - (this%div_z(0,i,j,k) * filter_coeff * this%grd_z(0,i,j,k) &
-                     + this%div_z(1,i,j,k) * filter_coeff * this%grd_z(-1,i,j,k))
-                this%tridiag%Az(i,j,k,+1) = - this%div_z(1,i,j,k) * filter_coeff * this%grd_z(0,i,j,k)
-                this%tridiag%Rz(i,j,k) = this%tridiag%Ry(i,k,j)
-             end do
-          end do
-       end do
-       call this%tridiag%linsol_z()        
-       ! Update A
-       do k=this%cfg%kmin_,this%cfg%kmax_
-          do j=this%cfg%jmin_,this%cfg%jmax_
-             do i=this%cfg%imin_,this%cfg%imax_
-                A(i,j,k)=this%tridiag%Rz(i,j,k)
-             end do
-          end do
-       end do
+       end if
+       ! Solve the linear system
+       call this%implicit%setup()
+       this%implicit%rhs=A
+       this%implicit%sol=0.0_WP
+       call this%implicit%solve()
+       A=this%implicit%sol
+       call this%cfg%sync(A)
+       
     else  !< Apply filter explicitly
        ! Allocate flux arrays
        allocate(FX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
@@ -1515,9 +1474,6 @@ contains
        ! Deallocate flux arrays
        deallocate(FX,FY,FZ)
     end if
-
-    ! Sync A
-    call this%cfg%sync(A)
 
   end subroutine filter
 
@@ -1727,7 +1683,7 @@ contains
   end subroutine inject
   
   
-  !> Calculate the CFL
+    !> Calculate the CFL
   subroutine get_cfl(this,dt,cflc,cfl)
     use mpi_f08,  only: MPI_ALLREDUCE,MPI_MAX
     use parallel, only: MPI_REAL_WP
@@ -1736,8 +1692,8 @@ contains
     real(WP), intent(in)  :: dt
     real(WP), intent(out) :: cflc
     real(WP), optional :: cfl
-    integer :: i,ierr
-    real(WP) :: my_CFLp_x,my_CFLp_y,my_CFLp_z,my_CFL_col
+    integer :: i,j,k,ierr
+    real(WP) :: my_CFLp_x,my_CFLp_y,my_CFLp_z,my_CFL_col,my_CFLpt_x,my_CFLpt_y,my_CFLpt_z
 
     ! Set the CFLs to zero
     my_CFLp_x=0.0_WP; my_CFLp_y=0.0_WP; my_CFLp_z=0.0_WP; my_CFL_col=0.0_WP
@@ -1749,13 +1705,28 @@ contains
     end do
     my_CFLp_x=my_CFLp_x*dt; my_CFLp_y=my_CFLp_y*dt; my_CFLp_z=my_CFLp_z*dt
 
+    my_CFLpt_x=0.0_WP; my_CFLpt_y=0.0_WP; my_CFLpt_z=0.0_WP
+    do k=this%cfg%kmin_,this%cfg%kmax_
+       do j=this%cfg%jmin_,this%cfg%jmax_
+          do i=this%cfg%imin_,this%cfg%imax_
+             my_CFLpt_x=max(my_CFLpt_x,4.0_WP*this%diff_pt(i,j,k)*this%cfg%dxi(i)**2)
+             my_CFLpt_y=max(my_CFLpt_y,4.0_WP*this%diff_pt(i,j,k)*this%cfg%dyi(j)**2)
+             my_CFLpt_z=max(my_CFLpt_z,4.0_WP*this%diff_pt(i,j,k)*this%cfg%dzi(k)**2)
+          end do
+       end do
+    end do
+    my_CFLpt_x=my_CFLpt_x*dt; my_CFLpt_y=my_CFLpt_y*dt; my_CFLpt_z=my_CFLpt_z*dt
+
     ! Get the parallel max
     call MPI_ALLREDUCE(my_CFLp_x,this%CFLp_x,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
     call MPI_ALLREDUCE(my_CFLp_y,this%CFLp_y,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
     call MPI_ALLREDUCE(my_CFLp_z,this%CFLp_z,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+    call MPI_ALLREDUCE(my_CFLpt_x,this%CFLpt_x,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+    call MPI_ALLREDUCE(my_CFLpt_y,this%CFLpt_y,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
+    call MPI_ALLREDUCE(my_CFLpt_z,this%CFLpt_z,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr)
 
     ! Return the maximum convective CFL
-    cflc=max(this%CFLp_x,this%CFLp_y,this%CFLp_z)
+    cflc=max(this%CFLp_x,this%CFLp_y,this%CFLp_z,this%CFLpt_x,this%CFLpt_y,this%CFLpt_z)
 
     ! Compute collision CFL
     my_CFL_col=10.0_WP*my_CFL_col*dt
@@ -1779,13 +1750,15 @@ contains
     ! Create safe np
     safe_np=real(max(this%np,1),WP)
 
-    ! Diameter and velocity min/max/mean
+    ! Particle min/max/mean
     this%dmin=huge(1.0_WP); this%dmax=-huge(1.0_WP); this%dmean=0.0_WP
+    this%Tmin=huge(1.0_WP); this%Tmax=-huge(1.0_WP); this%Tmean=0.0_WP
     this%Umin=huge(1.0_WP); this%Umax=-huge(1.0_WP); this%Umean=0.0_WP
     this%Vmin=huge(1.0_WP); this%Vmax=-huge(1.0_WP); this%Vmean=0.0_WP
     this%Wmin=huge(1.0_WP); this%Wmax=-huge(1.0_WP); this%Wmean=0.0_WP
     do i=1,this%np_
        this%dmin=min(this%dmin,this%p(i)%d     ); this%dmax=max(this%dmax,this%p(i)%d     ); this%dmean=this%dmean+this%p(i)%d
+       this%Tmin=min(this%Tmin,this%p(i)%T     ); this%Tmax=max(this%Tmax,this%p(i)%T     ); this%Tmean=this%Tmean+this%p(i)%T
        this%Umin=min(this%Umin,this%p(i)%vel(1)); this%Umax=max(this%Umax,this%p(i)%vel(1)); this%Umean=this%Umean+this%p(i)%vel(1)
        this%Vmin=min(this%Vmin,this%p(i)%vel(2)); this%Vmax=max(this%Vmax,this%p(i)%vel(2)); this%Vmean=this%Vmean+this%p(i)%vel(2)
        this%Wmin=min(this%Wmin,this%p(i)%vel(3)); this%Wmax=max(this%Wmax,this%p(i)%vel(3)); this%Wmean=this%Wmean+this%p(i)%vel(3)
@@ -1793,6 +1766,9 @@ contains
     call MPI_ALLREDUCE(this%dmin ,buf,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr); this%dmin =buf
     call MPI_ALLREDUCE(this%dmax ,buf,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); this%dmax =buf
     call MPI_ALLREDUCE(this%dmean,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%dmean=buf/safe_np
+    call MPI_ALLREDUCE(this%Tmin ,buf,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr); this%Tmin =buf
+    call MPI_ALLREDUCE(this%Tmax ,buf,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); this%Tmax =buf
+    call MPI_ALLREDUCE(this%Tmean,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Tmean=buf/safe_np
     call MPI_ALLREDUCE(this%Umin ,buf,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr); this%Umin =buf
     call MPI_ALLREDUCE(this%Umax ,buf,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); this%Umax =buf
     call MPI_ALLREDUCE(this%Umean,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Umean=buf/safe_np
@@ -1805,16 +1781,19 @@ contains
 
     ! Diameter and velocity variance
     this%dvar=0.0_WP
+    this%Tvar=0.0_WP
     this%Uvar=0.0_WP
     this%Vvar=0.0_WP
     this%Wvar=0.0_WP
     do i=1,this%np_
        this%dvar=this%dvar+(this%p(i)%d     -this%dmean)**2.0_WP
+       this%dvar=this%Tvar+(this%p(i)%T     -this%Tmean)**2.0_WP
        this%Uvar=this%Uvar+(this%p(i)%vel(1)-this%Umean)**2.0_WP
        this%Vvar=this%Vvar+(this%p(i)%vel(2)-this%Vmean)**2.0_WP
        this%Wvar=this%Wvar+(this%p(i)%vel(3)-this%Wmean)**2.0_WP
     end do
     call MPI_ALLREDUCE(this%dvar,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%dvar=buf/safe_np
+    call MPI_ALLREDUCE(this%Tvar,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Tvar=buf/safe_np
     call MPI_ALLREDUCE(this%Uvar,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Uvar=buf/safe_np
     call MPI_ALLREDUCE(this%Vvar,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Vvar=buf/safe_np
     call MPI_ALLREDUCE(this%Wvar,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Wvar=buf/safe_np
