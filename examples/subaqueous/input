@@ -4,9 +4,10 @@ Partition :	4 1 1
 # Mesh definition
 Lx :	0.3072
 Ly :	0.07!0.0358
-Lz :	.00128!0.0768
+Lz :	0.00128!0.0768
 nx :	240
 ny :	56!28
+nz :	1!60
 nz :	1!60
 
 # Fluid properties and velocity
@@ -18,7 +19,7 @@ Perturbation : 0
 Gravity : 0 -4.2326016 0
 
 # Particle parameters
-Number of particles : 5000
+Number of particles : 5000!263412
 Particle density :  2500
 Particle diameter : 1e-3
 Particle timestep size : 5e-5
@@ -33,3 +34,7 @@ Max cfl number :    0.9
 # Ensight output
 Ensight output period :  1e-4
 Postproc output period : 100
+
+# Restart files
+Restart output period : 200e-5
+Restart from : 1.00000E-01

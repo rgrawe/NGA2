@@ -1,5 +1,6 @@
 !> Various definitions and tools for running an NGA2 simulation
 module simulation
+   use string,             only: str_medium
    use precision,         only: WP
    use geometry,          only: cfg
    use fft2d_class,       only: fft2d
@@ -11,6 +12,7 @@ module simulation
    use ensight_class,     only: ensight
    use partmesh_class,    only: partmesh
    use event_class,       only: event
+   use datafile_class,     only: datafile
    use monitor_class,     only: monitor
    implicit none
    private
@@ -22,6 +24,11 @@ module simulation
    type(ddadi),       public :: vs
    type(lpt),         public :: lp
    type(sgsmodel),    public :: sgs
+
+   !> Provide a datafile and an event tracker for saving restarts
+   type(event)    :: save_evt
+   type(datafile) :: df
+   logical :: restarted
 
    !> Ensight postprocessing
    type(partmesh) :: pmesh
@@ -52,15 +59,15 @@ module simulation
 
    !> Event for post-processing
    type(event) :: ppevt
-
+   
  contains
 
    !> Specialized subroutine that outputs the velocity distribution
    subroutine postproc_vel()
-      use string,    only: str_medium
-      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM
-      use parallel,  only: MPI_REAL_WP
-      implicit none
+     use string,    only: str_medium
+     use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM
+     use parallel,  only: MPI_REAL_WP
+     implicit none
       integer :: iunit,ierr,i,j,k
       real(WP), dimension(:), allocatable :: Uavg,Uavg_,vol,vol_
       character(len=str_medium) :: filename,timestamp
@@ -128,17 +135,55 @@ module simulation
 
    !> Initialization of problem solver
    subroutine simulation_init
-      use param, only: param_read
-      implicit none
+     use param, only: param_read
+     implicit none
 
-      ! Initialize time tracker with 2 subiterations
-      initialize_timetracker: block
-         time=timetracker(amRoot=cfg%amRoot)
+     ! Initialize time tracker with 2 subiterations
+     initialize_timetracker: block
+       time=timetracker(amRoot=cfg%amRoot)
          call param_read('Max timestep size',time%dtmax)
          call param_read('Max cfl number',time%cflmax)
          time%dt=time%dtmax
          time%itmax=2
        end block initialize_timetracker
+       
+     ! Handle restart/saves here
+     restart_and_save: block
+       character(len=str_medium) :: timestamp
+       ! Create event for saving restart files
+       save_evt=event(time,'Restart output')
+       call param_read('Restart output period',save_evt%tper)
+       ! Check if we are restarting
+       call param_read(tag='Restart from',val=timestamp,short='r',default='')
+       restarted=.false.; if (len_trim(timestamp).gt.0) restarted=.true.
+       if (restarted) then
+          ! If we are, read the name of the directory
+          call param_read('Restart from',timestamp,'r')
+          ! Read the datafile
+          df=datafile(pg=cfg,fdata='restart/data_'//trim(adjustl(timestamp)))
+       else
+          ! Prepare a new directory for storing files for restart
+          call execute_command_line('mkdir -p restart')
+          ! If we are not restarting, we will still need a datafile for saving restart files
+          df=datafile(pg=cfg,filename=trim(cfg%name),nval=4,nvar=3)
+          df%valname(1)='t'
+          df%valname(2)='dt'
+          df%valname(3)='meanU'
+          df%valname(4)='meanW'
+          df%varname(1)='U'
+          df%varname(2)='V'
+          df%varname(3)='W'
+       end if
+     end block restart_and_save
+
+     ! Revisit timetracker to adjust time and time step values if this is a restart
+     update_timetracker: block
+       if (restarted) then
+          call df%pullval(name='t' ,val=time%t )
+          call df%pullval(name='dt',val=time%dt)
+          time%told=time%t-time%dt
+       end if
+     end block update_timetracker
 
        ! Create a low Mach flow solver with bconds
        create_flow_solver: block
@@ -189,6 +234,7 @@ module simulation
          real(WP) :: dp
          integer :: i,j,np,ierr
          logical :: overlap
+         character(len=str_medium) :: timestamp
          ! Create solver
          lp=lpt(cfg=cfg,name='LPT')
          ! Get drag model from the input
@@ -203,46 +249,57 @@ module simulation
          ! Maximum timestep size used for particles
          call param_read('Particle timestep size',lp_dt_max,default=huge(1.0_WP))
          lp_dt=lp_dt_max
-         if (lp%cfg%amRoot) then
-            call lp%resize(np)
-            ! Distribute particles
-            do i=1,np
-               ! Set the diameter
-               lp%p(i)%d=dp
-               ! Give position (avoid overlap)
-               overlap=.true.
-               do while(overlap)
-                  lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin)+0.5_WP*dp,lp%cfg%x(lp%cfg%imax+1)-0.5_WP*dp),&
-                       &       random_uniform(lp%cfg%y(lp%cfg%jmin)+0.5_WP*dp,lp%cfg%y(lp%cfg%jmin)+0.5_WP*lp%cfg%yL),&
-                       &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
-                  if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=lp%cfg%zm(lp%cfg%kmin_)
-                  overlap=.false.
-                  check: do j=1,i-1
-                     if (sqrt(sum((lp%p(i)%pos-lp%p(j)%pos)**2)).lt.0.5_WP*(lp%p(i)%d+lp%p(j)%d)) then
-                        overlap=.true.
-                        exit check
-                     end if
-                  end do check
+         if (restarted) then
+            call param_read('Restart from',timestamp,'r')
+            ! Read the part file
+            call lp%read(filename='restart/part_'//trim(adjustl(timestamp)))
+         else
+            if (lp%cfg%amRoot) then
+               call lp%resize(np)
+               ! Distribute particles
+               do i=1,np
+                  ! Set the diameter
+                  lp%p(i)%d=dp
+                  ! Give position (avoid overlap)
+                  overlap=.true.
+                  do while(overlap)
+                     lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin)+0.5_WP*dp,lp%cfg%x(lp%cfg%imax+1)-0.5_WP*dp),&
+                          &       random_uniform(lp%cfg%y(lp%cfg%jmin)+0.5_WP*dp,lp%cfg%y(lp%cfg%jmin)+0.5_WP*lp%cfg%yL),&
+                          &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
+                     if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=lp%cfg%zm(lp%cfg%kmin_)
+                     overlap=.false.
+                     check: do j=1,i-1
+                        if (sqrt(sum((lp%p(i)%pos-lp%p(j)%pos)**2)).lt.0.5_WP*(lp%p(i)%d+lp%p(j)%d)) then
+                           overlap=.true.
+                           exit check
+                        end if
+                     end do check
+                  end do
+                  !print *, real(i,WP)/real(np,WP)*100.0_WP,'%'
+                  ! Give id
+                  lp%p(i)%id=int(i,8)
+                  ! Set the temperature
+                  lp%p(i)%T=298.15_WP
+                  ! Give zero velocity
+                  lp%p(i)%vel=0.0_WP
+                  ! Give zero collision force
+                  lp%p(i)%Acol=0.0_WP
+                  lp%p(i)%Tcol=0.0_WP
+                  ! Give zero dt
+                  lp%p(i)%dt=0.0_WP
+                  ! Locate the particle on the mesh
+                  lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+                  ! Activate the particle
+                  lp%p(i)%flag=0
                end do
-               !print *, real(i,WP)/real(np,WP)*100.0_WP,'%'
-               ! Give id
-               lp%p(i)%id=int(i,8)
-               ! Give zero velocity
-               lp%p(i)%vel=0.0_WP
-               ! Give zero collision force
-               lp%p(i)%Acol=0.0_WP
-               lp%p(i)%Tcol=0.0_WP
-               ! Give zero dt
-               lp%p(i)%dt=0.0_WP
-               ! Locate the particle on the mesh
-               lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
-               ! Activate the particle
-               lp%p(i)%flag=0
-            end do
+            end if
+            call lp%sync()
+
+            if (lp%cfg%amRoot) then
+               print*,"===== Particle Setup Description ====="
+               print*,'Number of particles', np
+            end if
          end if
-         call lp%sync()
-         ! Get initial particle volume fraction
-         call lp%update_VF()
          ! Set collision timescale
          call param_read('Collision timescale',lp%tau_col,default=15.0_WP*time%dt)
          ! Set coefficient of restitution
@@ -251,16 +308,14 @@ module simulation
          call param_read('Friction coefficient',lp%mu_f,default=0.0_WP)
          ! Set gravity
          call param_read('Gravity',lp%gravity)
-         if (lp%cfg%amRoot) then
-            print*,"===== Particle Setup Description ====="
-            print*,'Number of particles', np
-         end if
+         ! Get initial particle volume fraction
+         call lp%update_VF()
        end block initialize_lpt
 
 
-      ! Create partmesh object for Lagrangian particle output
-      create_pmesh: block
-        integer :: i
+       ! Create partmesh object for Lagrangian particle output
+       create_pmesh: block
+         integer :: i
         pmesh=partmesh(nvar=1,nvec=1,name='lpt')
         pmesh%varname(1)='diameter'
         pmesh%vecname(1)='velocity'
@@ -277,15 +332,23 @@ module simulation
         use lowmach_class, only: bcond
         integer :: n,i,j,k
         type(bcond), pointer :: mybc
-        ! Zero initial field
-        fs%U=0.0_WP; fs%V=0.0_WP; fs%W=0.0_WP
-        ! Initialize velocity based on specified bulk
         call param_read('Ubulk',Ubulk)
         call param_read('Wbulk',Wbulk,default=0.0_WP)
-        where (fs%umask.eq.0) fs%U=Ubulk
-        where (fs%wmask.eq.0) fs%W=Wbulk
-        meanU=Ubulk
-        meanW=Wbulk
+        if (restarted) then
+           call df%pullvar(name='U',var=fs%U)
+           call df%pullvar(name='V',var=fs%V)
+           call df%pullvar(name='W',var=fs%W)
+           call df%pullval(name='meanU',val=meanU)
+           call df%pullval(name='meanW',val=meanW)
+        else
+           ! Zero initial field
+           fs%U=0.0_WP; fs%V=0.0_WP; fs%W=0.0_WP
+           ! Initialize velocity based on specified bulk
+           where (fs%umask.eq.0) fs%U=Ubulk
+           where (fs%wmask.eq.0) fs%W=Wbulk
+           meanU=Ubulk
+           meanW=Wbulk
+        end if
         ! Set no-slip walls
         call fs%get_bcond('bottom',mybc)
         do n=1,mybc%itr%no_
@@ -623,9 +686,29 @@ module simulation
          ! Specialized post-processing
          if (ppevt%occurs()) call postproc_vel()
 
+         ! Finally, see if it's time to save restart files
+         if (save_evt%occurs()) then
+            save_restart: block
+              character(len=str_medium) :: timestamp
+              ! Prefix for files
+              write(timestamp,'(es12.5)') time%t
+              ! Populate df and write it
+              call df%pushval(name='t' ,val=time%t     )
+              call df%pushval(name='dt',val=time%dt    )
+              call df%pushvar(name='U' ,var=fs%U       )
+              call df%pushvar(name='V' ,var=fs%V       )
+              call df%pushvar(name='W' ,var=fs%W       )
+              call df%pushval(name='meanU', val=meanU  )
+              call df%pushval(name='meanW', val=meanW  )
+              call df%write(fdata='restart/data_'//trim(adjustl(timestamp)))
+              ! Write particle file
+              call lp%write(filename='restart/part_'//trim(adjustl(timestamp)))
+            end block save_restart
+         end if
+
       end do
 
-   end subroutine simulation_run
+    end subroutine simulation_run
 
 
    !> Finalize the NGA2 simulation
