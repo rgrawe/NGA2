@@ -134,6 +134,7 @@ module lpt_class
      real(WP), dimension(:,:,:), allocatable :: ptke     !< Pseudo-turbulent kinetic energy, cell-centered
      real(WP), dimension(:,:,:), allocatable :: diff_pt  !< Pseudo-turbulent diffusivity, cell-centered
      real(WP), dimension(:,:,:,:), allocatable :: itpr_x,itpr_y,itpr_z !< Interpolation from cell face to cell center
+     real(WP), dimension(:,:,:,:), allocatable :: grdsc_x,grdsc_y,grdsc_z    !< Gradient operator for PTHF and PTMF
 
      ! Scalar indices
      integer :: nscalar,ind_CO2,ind_T
@@ -218,6 +219,9 @@ contains
     allocate(self%grd_x(-1:0,self%cfg%imin_:self%cfg%imax_+1,self%cfg%jmin_:self%cfg%jmax_+1,self%cfg%kmin_:self%cfg%kmax_+1)) !< X-face-centered
     allocate(self%grd_y(-1:0,self%cfg%imin_:self%cfg%imax_+1,self%cfg%jmin_:self%cfg%jmax_+1,self%cfg%kmin_:self%cfg%kmax_+1)) !< Y-face-centered
     allocate(self%grd_z(-1:0,self%cfg%imin_:self%cfg%imax_+1,self%cfg%jmin_:self%cfg%jmax_+1,self%cfg%kmin_:self%cfg%kmax_+1)) !< Z-face-centered
+    allocate(self%grdsc_x(-1:0,self%cfg%imin_:self%cfg%imax_+1,self%cfg%jmin_:self%cfg%jmax_+1,self%cfg%kmin_:self%cfg%kmax_+1)) !< X-face-centered
+    allocate(self%grdsc_y(-1:0,self%cfg%imin_:self%cfg%imax_+1,self%cfg%jmin_:self%cfg%jmax_+1,self%cfg%kmin_:self%cfg%kmax_+1)) !< Y-face-centered
+    allocate(self%grdsc_z(-1:0,self%cfg%imin_:self%cfg%imax_+1,self%cfg%jmin_:self%cfg%jmax_+1,self%cfg%kmin_:self%cfg%kmax_+1)) !< Z-face-centered
     ! Create gradient coefficients to cell faces
     do k=self%cfg%kmin_,self%cfg%kmax_+1
        do j=self%cfg%jmin_,self%cfg%jmax_+1
@@ -225,6 +229,9 @@ contains
              self%grd_x(:,i,j,k)=self%cfg%dxmi(i)*[-1.0_WP,+1.0_WP] !< Gradient in x from [xm,ym,zm] to [x,ym,zm]
              self%grd_y(:,i,j,k)=self%cfg%dymi(j)*[-1.0_WP,+1.0_WP] !< Gradient in y from [xm,ym,zm] to [xm,y,zm]
              self%grd_z(:,i,j,k)=self%cfg%dzmi(k)*[-1.0_WP,+1.0_WP] !< Gradient in z from [xm,ym,zm] to [xm,ym,z]
+             self%grdsc_x(:,i,j,k)=self%cfg%dxmi(i)*[-1.0_WP,+1.0_WP] !< Gradient in x from [xm,ym,zm] to [x,ym,zm]
+             self%grdsc_y(:,i,j,k)=self%cfg%dymi(j)*[-1.0_WP,+1.0_WP] !< Gradient in y from [xm,ym,zm] to [xm,y,zm]
+             self%grdsc_z(:,i,j,k)=self%cfg%dzmi(k)*[-1.0_WP,+1.0_WP] !< Gradient in z from [xm,ym,zm] to [xm,ym,z]
           end do
        end do
     end do
@@ -264,9 +271,9 @@ contains
              if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i-1,j,k).eq.0.0_WP) self%grd_x(:,i,j,k)=0.0_WP
              if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i,j-1,k).eq.0.0_WP) self%grd_y(:,i,j,k)=0.0_WP
              if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i,j,k-1).eq.0.0_WP) self%grd_z(:,i,j,k)=0.0_WP
-             ! if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_x(:,i,j,k)=0.0_WP
-             ! if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_y(:,i,j,k)=0.0_WP
-             ! if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_z(:,i,j,k)=0.0_WP
+             if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grdsc_x(:,i,j,k)=0.0_WP
+             if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grdsc_y(:,i,j,k)=0.0_WP
+             if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grdsc_z(:,i,j,k)=0.0_WP
           end do
        end do
     end do
@@ -292,14 +299,17 @@ contains
     if (self%cfg%nx.eq.1) then
        self%div_x=0.0_WP
        self%grd_x=0.0_WP
+       self%grdsc_x=0.0_WP
     end if
     if (self%cfg%ny.eq.1) then
        self%div_y=0.0_WP
        self%grd_y=0.0_WP
+       self%grdsc_y=0.0_WP
     end if
     if (self%cfg%nz.eq.1) then
        self%div_z=0.0_WP
        self%grd_z=0.0_WP
+       self%grdsc_z=0.0_WP
     end if
 
     ! Create implicit solver object for filtering
@@ -738,8 +748,8 @@ contains
        if (myp%flag.eq.1) this%np_out=this%np_out+1
        ! Copy back to particle
        if (myp%id.eq.-1) then
-          this%p(i)%T=myp%T
-          this%p(i)%Mc=myp%Mc
+          !this%p(i)%T=myp%T
+          !this%p(i)%Mc=myp%Mc
        else
           this%p(i)=myp
        end if
@@ -1061,7 +1071,8 @@ contains
     call this%filter(slip_y)
     call this%filter(slip_z)
     call this%filter(Re)
-    
+
+    PTRS=0.0_WP
     do k=this%cfg%kmino_,this%cfg%kmaxo_
        do j=this%cfg%jmino_,this%cfg%jmaxo_
           do i=this%cfg%imino_,this%cfg%imaxo_
@@ -1070,6 +1081,7 @@ contains
              slip(2)=slip_y(i,j,k)
              slip(3)=slip_z(i,j,k)
              Rep=Re(i,j,k)
+             Rep=1.0_WP
              pVF=this%VF(i,j,k)+epsilon(1.0_WP)
              fVF=1.0_WP-pVF
              
@@ -1183,7 +1195,7 @@ contains
                 alpha_par=diff(i,j,k)*(2.0_WP*Rep*(Rep+1.4_WP)*Pr**2*exp(-0.002089_WP*Rep)/(3.0_WP*Pi*Nu)*&
                         (fVF*(-5.11_WP*pVF+10.1_WP*pVF**2-10.85_WP*pVF**3)+1-exp(-10.96_WP*pVF))/&
                         ((1.17_WP*pVF-0.2021_WP*pVF**(1.0_WP/2.0_WP)+0.08568_WP*pVF**(1.0_WP/4.0_WP))*fVF**2*(1.0_WP-1.6_WP*pVF*fVF-3.0_WP*pVF*fVF**4*exp(-Rep**0.4_WP*pVF))))
-                this%diff_pt(i,j,k)=alpha_par
+                this%diff_pt(i,j,k)=alpha_par/rho(i,j,k)
                 !  Assume isotropic in 2D
                 if (this%cfg%nx.eq.1) then
                    alphaij = 0.0_WP
@@ -1243,34 +1255,34 @@ contains
        do k=this%cfg%kmin_,this%cfg%kmax_+1
           do j=this%cfg%jmin_,this%cfg%jmax_+1
              do i=this%cfg%imin_,this%cfg%imax_+1
-                PTHF(1,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(1,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*T(i-1:i,j,k))+&
-                                   sum(this%itpr_y(:,i,j,k)*alpha(4,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*T(i,j-1:j,k))+&
-                                   sum(this%itpr_z(:,i,j,k)*alpha(6,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*T(i,j,k-1:k)))
-                PTHF(2,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(4,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*T(i-1:i,j,k))+&
-                                   sum(this%itpr_y(:,i,j,k)*alpha(2,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*T(i,j-1:j,k))+&
-                                   sum(this%itpr_z(:,i,j,k)*alpha(5,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*T(i,j,k-1:k)))
-                PTHF(3,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(6,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*T(i-1:i,j,k))+&
-                                   sum(this%itpr_y(:,i,j,k)*alpha(5,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*T(i,j-1:j,k))+&
-                                   sum(this%itpr_z(:,i,j,k)*alpha(3,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*T(i,j,k-1:k)))
+                PTHF(1,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(1,i-1:i,j,k))*sum(this%grdsc_x(:,i,j,k)*T(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(4,i,j-1:j,k))*sum(this%grdsc_y(:,i,j,k)*T(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(6,i,j,k-1:k))*sum(this%grdsc_z(:,i,j,k)*T(i,j,k-1:k)))
+                PTHF(2,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(4,i-1:i,j,k))*sum(this%grdsc_x(:,i,j,k)*T(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(2,i,j-1:j,k))*sum(this%grdsc_y(:,i,j,k)*T(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(5,i,j,k-1:k))*sum(this%grdsc_z(:,i,j,k)*T(i,j,k-1:k)))
+                PTHF(3,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(6,i-1:i,j,k))*sum(this%grdsc_x(:,i,j,k)*T(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(5,i,j-1:j,k))*sum(this%grdsc_y(:,i,j,k)*T(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(3,i,j,k-1:k))*sum(this%grdsc_z(:,i,j,k)*T(i,j,k-1:k)))
              end do
           end do
        end do
        call this%cfg%sync(PTHF)
     end if
-    
+
     if (present(Y)) then
        do k=this%cfg%kmin_,this%cfg%kmax_+1
           do j=this%cfg%jmin_,this%cfg%jmax_+1
              do i=this%cfg%imin_,this%cfg%imax_+1
-                PTMF(1,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(1,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*Y(i-1:i,j,k))+&
-                                   sum(this%itpr_y(:,i,j,k)*alpha(4,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*Y(i,j-1:j,k))+&
-                                   sum(this%itpr_z(:,i,j,k)*alpha(6,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*Y(i,j,k-1:k)))
-                PTMF(2,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(4,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*Y(i-1:i,j,k))+&
-                                   sum(this%itpr_y(:,i,j,k)*alpha(2,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*Y(i,j-1:j,k))+&
-                                   sum(this%itpr_z(:,i,j,k)*alpha(5,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*Y(i,j,k-1:k)))
-                PTMF(3,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(6,i-1:i,j,k))*sum(this%grd_x(:,i,j,k)*Y(i-1:i,j,k))+&
-                                   sum(this%itpr_y(:,i,j,k)*alpha(5,i,j-1:j,k))*sum(this%grd_y(:,i,j,k)*Y(i,j-1:j,k))+&
-                                   sum(this%itpr_z(:,i,j,k)*alpha(3,i,j,k-1:k))*sum(this%grd_z(:,i,j,k)*Y(i,j,k-1:k)))
+                PTMF(1,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(1,i-1:i,j,k))*sum(this%grdsc_x(:,i,j,k)*Y(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(4,i,j-1:j,k))*sum(this%grdsc_y(:,i,j,k)*Y(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(6,i,j,k-1:k))*sum(this%grdsc_z(:,i,j,k)*Y(i,j,k-1:k)))
+                PTMF(2,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(4,i-1:i,j,k))*sum(this%grdsc_x(:,i,j,k)*Y(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(2,i,j-1:j,k))*sum(this%grdsc_y(:,i,j,k)*Y(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(5,i,j,k-1:k))*sum(this%grdsc_z(:,i,j,k)*Y(i,j,k-1:k)))
+                PTMF(3,i,j,k)=fVf*(sum(this%itpr_x(:,i,j,k)*alpha(6,i-1:i,j,k))*sum(this%grdsc_x(:,i,j,k)*Y(i-1:i,j,k))+&
+                                   sum(this%itpr_y(:,i,j,k)*alpha(5,i,j-1:j,k))*sum(this%grdsc_y(:,i,j,k)*Y(i,j-1:j,k))+&
+                                   sum(this%itpr_z(:,i,j,k)*alpha(3,i,j,k-1:k))*sum(this%grdsc_z(:,i,j,k)*Y(i,j,k-1:k)))
              end do
           end do
        end do
@@ -1364,6 +1376,7 @@ contains
        call this%cfg%sync(srcY)
     end if
 
+
     ! Clean up
     deallocate(slip_x,slip_y,slip_z,Re,PTRS)
     if (allocated(FX)) deallocate(FX)
@@ -1372,7 +1385,6 @@ contains
     if (allocated(alpha)) deallocate(alpha)
     if (allocated(PTHF)) deallocate(PTHF)
     if (allocated(PTMF)) deallocate(PTMF)
-    
   end subroutine get_ptke
 
   !> Stores scalar information
@@ -1683,7 +1695,7 @@ contains
   end subroutine inject
   
   
-    !> Calculate the CFL
+  !> Calculate the CFL
   subroutine get_cfl(this,dt,cflc,cfl)
     use mpi_f08,  only: MPI_ALLREDUCE,MPI_MAX
     use parallel, only: MPI_REAL_WP

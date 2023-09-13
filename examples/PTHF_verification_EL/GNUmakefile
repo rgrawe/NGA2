@@ -5,8 +5,9 @@ NGA_HOME ?= ../..
 PRECISION = DOUBLE
 USE_MPI   = TRUE
 USE_FFTW  = TRUE
-USE_HYPRE = TRUE
-USE_LAPACK= TRUE
+USE_HYPRE = FALSE
+USE_LAPACK= FALSE
+USE_FFTW  = TRUE
 PROFILE   = FALSE
 DEBUG     = FALSE
 COMP      = gnu
@@ -31,7 +32,7 @@ FFTW_DIR=/Users/rgrawe/fftw
 include $(NGA_HOME)/tools/GNUMake/Make.defs
 
 # Include NGA base code
-Bdirs   := subgrid core variable_density particles data transform solver config grid libraries
+Bdirs   := variable_density transform particles core data solver config grid libraries
 Bpack   += $(foreach dir, $(Bdirs), $(NGA_HOME)/src/$(dir)/Make.package)
 include $(Bpack)
 

@@ -133,6 +133,7 @@ module lpt_class
      ! Pseudo turbulence
      real(WP), dimension(:,:,:), allocatable :: ptke     !< Pseudo-turbulent kinetic energy, cell-centered
      real(WP), dimension(:,:,:), allocatable :: diff_pt  !< Pseudo-turbulent diffusivity, cell-centered
+     real(WP), dimension(:,:,:), allocatable :: Tx       !< To monitor the gradient, cell-centered
      real(WP), dimension(:,:,:,:), allocatable :: itpr_x,itpr_y,itpr_z !< Interpolation from cell face to cell center
 
      ! Scalar indices
@@ -195,6 +196,7 @@ contains
     allocate(self%VF  (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%VF=0.0_WP
     allocate(self%ptke(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%ptke=0.0_WP
     allocate(self%diff_pt(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%diff_pt=0.0_WP
+    allocate(self%Tx(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%Tx=0.0_WP
 
     ! Zero friction by default
     self%mu_f=0.0_WP
@@ -261,12 +263,12 @@ contains
     do k=self%cfg%kmin_,self%cfg%kmax_+1
        do j=self%cfg%jmin_,self%cfg%jmax_+1
           do i=self%cfg%imin_,self%cfg%imax_+1
-             if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i-1,j,k).eq.0.0_WP) self%grd_x(:,i,j,k)=0.0_WP
-             if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i,j-1,k).eq.0.0_WP) self%grd_y(:,i,j,k)=0.0_WP
-             if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i,j,k-1).eq.0.0_WP) self%grd_z(:,i,j,k)=0.0_WP
-             ! if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_x(:,i,j,k)=0.0_WP
-             ! if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_y(:,i,j,k)=0.0_WP
-             ! if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_z(:,i,j,k)=0.0_WP
+             ! if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i-1,j,k).eq.0.0_WP) self%grd_x(:,i,j,k)=0.0_WP
+             ! if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i,j-1,k).eq.0.0_WP) self%grd_y(:,i,j,k)=0.0_WP
+             ! if (self%cfg%VF(i,j,k).eq.0.0_WP.or.self%cfg%VF(i,j,k-1).eq.0.0_WP) self%grd_z(:,i,j,k)=0.0_WP
+             if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_x(:,i,j,k)=0.0_WP
+             if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_y(:,i,j,k)=0.0_WP
+             if (self%cfg%VF(i,j,k).eq.0.0_WP) self%grd_z(:,i,j,k)=0.0_WP
           end do
        end do
     end do
@@ -738,8 +740,8 @@ contains
        if (myp%flag.eq.1) this%np_out=this%np_out+1
        ! Copy back to particle
        if (myp%id.eq.-1) then
-          this%p(i)%T=myp%T
-          this%p(i)%Mc=myp%Mc
+          !this%p(i)%T=myp%T
+          !this%p(i)%Mc=myp%Mc
        else
           this%p(i)=myp
        end if
@@ -1061,7 +1063,13 @@ contains
     call this%filter(slip_y)
     call this%filter(slip_z)
     call this%filter(Re)
-    
+
+    ! Set slip velocity to cell values for PTHF verification
+    slip_x=Ui
+    slip_y=Vi
+    slip_z=Wi
+
+    PTRS=0.0_WP
     do k=this%cfg%kmino_,this%cfg%kmaxo_
        do j=this%cfg%jmino_,this%cfg%jmaxo_
           do i=this%cfg%imino_,this%cfg%imaxo_
@@ -1069,9 +1077,11 @@ contains
              slip(1)=slip_x(i,j,k)
              slip(2)=slip_y(i,j,k)
              slip(3)=slip_z(i,j,k)
-             Rep=Re(i,j,k)
              pVF=this%VF(i,j,k)+epsilon(1.0_WP)
              fVF=1.0_WP-pVF
+             ! Compute Rep for PTHF verification
+             !Rep=fVF*rho(i,j,k)*norm2(slip)/visc(i,j,k)
+             Rep=100.0_WP
              
              ! Compute PTKE
              this%ptke(i,j,k) = 0.5_WP*(sum(slip**2))*(2.0_WP*pVF + 2.5_WP*pVF*(1.0_WP-pVF)**3*exp(-pVF*sqrt(Rep)))
@@ -1177,13 +1187,14 @@ contains
              ! Store the pseudo-turbulent diffusivity
              if (present(T)) then
                 ! Compute Nusselt Number
-                Pr=visc(i,j,k)/diff(i,j,k)
+                !Pr=visc(i,j,k)/diff(i,j,k)
+                Pr=0.7_WP
                 Nu=(-0.46_WP+1.77_WP*fVF+0.69_WP*fVF**2)/fVf**3+(1.37_WP-2.4_WP*fVf+1.2_WP*fVf**2)*Rep**(0.7_WP)*Pr**(1.0_WP/3.0_WP)
                 ! Pseudo-turbulent diffusivity
                 alpha_par=diff(i,j,k)*(2.0_WP*Rep*(Rep+1.4_WP)*Pr**2*exp(-0.002089_WP*Rep)/(3.0_WP*Pi*Nu)*&
                         (fVF*(-5.11_WP*pVF+10.1_WP*pVF**2-10.85_WP*pVF**3)+1-exp(-10.96_WP*pVF))/&
                         ((1.17_WP*pVF-0.2021_WP*pVF**(1.0_WP/2.0_WP)+0.08568_WP*pVF**(1.0_WP/4.0_WP))*fVF**2*(1.0_WP-1.6_WP*pVF*fVF-3.0_WP*pVF*fVF**4*exp(-Rep**0.4_WP*pVF))))
-                this%diff_pt(i,j,k)=alpha_par
+                this%diff_pt(i,j,k)=alpha_par/rho(i,j,k)
                 !  Assume isotropic in 2D
                 if (this%cfg%nx.eq.1) then
                    alphaij = 0.0_WP
@@ -1275,7 +1286,7 @@ contains
           end do
        end do
        call this%cfg%sync(PTMF)
-    end if
+    end if 
 
     ! Return source terms
     if (present(srcU)) then
@@ -1350,6 +1361,25 @@ contains
              end do
           end do
        end do
+       ! ! Simplified Calculations for PTHF Verification
+       ! do k=this%cfg%kmin_,this%cfg%kmax_+1
+       !    do j=this%cfg%jmin_,this%cfg%jmax_+1
+       !       do i=this%cfg%imin_,this%cfg%imax_+1
+       !          FX(i,j,k) = 0.9_WP*8.9228879328665123_WP*sum(this%grd_x(:,i,j,k)*T(i-1:i,j,k))
+       !          FY(i,j,k) = 0.9_WP*8.9228879328665123_WP*sum(this%grd_y(:,i,j,k)*T(i,j-1:j,k))
+       !          FZ(i,j,k) = 0.9_WP*8.9228879328665123_WP*sum(this%grd_z(:,i,j,k)*T(i,j,k-1:k))
+       !       end do
+       !    end do
+       ! end do
+       ! this%Tx= FX
+       ! ! Take divergence
+       ! do k=this%cfg%kmin_,this%cfg%kmax_
+       !    do j=this%cfg%jmin_,this%cfg%jmax_
+       !       do i=this%cfg%imin_,this%cfg%imax_
+       !          srcT(i,j,k)=dt*(sum(this%div_x(:,i,j,k)*FX(i:i+1,j,k))+sum(this%div_y(:,i,j,k)*FY(i,j:j+1,k))+sum(this%div_z(:,i,j,k)*FZ(i,j,k:k+1)))
+       !       end do
+       !    end do
+       ! end do
        call this%cfg%sync(srcT)
     end if
     if (present(srcY)) then
@@ -1357,12 +1387,13 @@ contains
        do k=this%cfg%kmin_,this%cfg%kmax_
           do j=this%cfg%jmin_,this%cfg%jmax_
              do i=this%cfg%imin_,this%cfg%imax_
-                srcY(i,j,k)=dt*(sum(this%div_x(:,i,j,k)*PTMF(1,i:i+1,j,k))+sum(this%div_y(:,i,j,k)*PTMF(2,i,j:j+1,k))+sum(this%div_z(:,i,j,k)*PTMF(3,i,j,k:k+1)))
+                srcY(i,j,k)=dt*(sum(this%div_x(:,i,j,k)*FX(i:i+1,j,k))+sum(this%div_y(:,i,j,k)*FY(i,j:j+1,k))+sum(this%div_z(:,i,j,k)*FZ(i,j,k:k+1)))
              end do
           end do
        end do
        call this%cfg%sync(srcY)
     end if
+
 
     ! Clean up
     deallocate(slip_x,slip_y,slip_z,Re,PTRS)
@@ -1372,7 +1403,6 @@ contains
     if (allocated(alpha)) deallocate(alpha)
     if (allocated(PTHF)) deallocate(PTHF)
     if (allocated(PTMF)) deallocate(PTMF)
-    
   end subroutine get_ptke
 
   !> Stores scalar information
@@ -1683,7 +1713,7 @@ contains
   end subroutine inject
   
   
-    !> Calculate the CFL
+  !> Calculate the CFL
   subroutine get_cfl(this,dt,cflc,cfl)
     use mpi_f08,  only: MPI_ALLREDUCE,MPI_MAX
     use parallel, only: MPI_REAL_WP
