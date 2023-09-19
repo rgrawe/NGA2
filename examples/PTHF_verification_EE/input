@@ -6,14 +6,14 @@ Partition :	4 1 1
 Lx :	64
 Ly :	16
 Lz :	2
-nx :	128
+nx :	256
 ny :	16
 nz :	2
 
 # Time integration
 Max timestep size :	1e-1
 Max cfl number :	1
-Max time : 	300
+Max time : 	200
 
 # Fluid properties
 Dynamic viscosity : 0.01

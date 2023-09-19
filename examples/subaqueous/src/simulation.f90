@@ -69,30 +69,80 @@ module simulation
      use parallel,  only: MPI_REAL_WP
      implicit none
       integer :: iunit,ierr,i,j,k
-      real(WP), dimension(:), allocatable :: Uavg,Uavg_,vol,vol_
+      real(WP), dimension(:), allocatable :: Uavg,Uavg_,Vavg,Vavg_,Wavg_,Wavg,U2_,U2,V2_,V2,W2_,W2
+      real(WP), dimension(:), allocatable :: vol,vol_,rhoVol,rhoVol_,VF,ptke_,ptke,sgsvisc_,sgsvisc
       character(len=str_medium) :: filename,timestamp
       ! Allocate vertical line storage
-      allocate(Uavg (fs%cfg%jmin:fs%cfg%jmax)); Uavg =0.0_WP
-      allocate(Uavg_(fs%cfg%jmin:fs%cfg%jmax)); Uavg_=0.0_WP
       allocate(vol_ (fs%cfg%jmin:fs%cfg%jmax)); vol_ =0.0_WP
       allocate(vol  (fs%cfg%jmin:fs%cfg%jmax)); vol  =0.0_WP
+      allocate(rhoVol_(fs%cfg%jmin:fs%cfg%jmax)); rhoVol_ =0.0_WP
+      allocate(rhoVol (fs%cfg%jmin:fs%cfg%jmax)); rhoVol  =0.0_WP
+      allocate(VF(fs%cfg%jmin:fs%cfg%jmax)); VF =0.0_WP
+      allocate(Uavg (fs%cfg%jmin:fs%cfg%jmax)); Uavg =0.0_WP
+      allocate(Uavg_(fs%cfg%jmin:fs%cfg%jmax)); Uavg_=0.0_WP
+      allocate(Vavg (fs%cfg%jmin:fs%cfg%jmax)); Vavg =0.0_WP
+      allocate(Vavg_(fs%cfg%jmin:fs%cfg%jmax)); Vavg_=0.0_WP
+      allocate(Wavg (fs%cfg%jmin:fs%cfg%jmax)); Wavg =0.0_WP
+      allocate(Wavg_(fs%cfg%jmin:fs%cfg%jmax)); Wavg_=0.0_WP
+      allocate(U2 (fs%cfg%jmin:fs%cfg%jmax)); U2 =0.0_WP
+      allocate(U2_(fs%cfg%jmin:fs%cfg%jmax)); U2_=0.0_WP
+      allocate(V2 (fs%cfg%jmin:fs%cfg%jmax)); V2 =0.0_WP
+      allocate(V2_(fs%cfg%jmin:fs%cfg%jmax)); V2_=0.0_WP
+      allocate(W2 (fs%cfg%jmin:fs%cfg%jmax)); W2 =0.0_WP
+      allocate(W2_(fs%cfg%jmin:fs%cfg%jmax)); W2_=0.0_WP
+      allocate(ptke_(fs%cfg%jmin:fs%cfg%jmax)); ptke_=0.0_WP
+      allocate(ptke (fs%cfg%jmin:fs%cfg%jmax)); ptke =0.0_WP
+      allocate(sgsvisc (fs%cfg%jmin:fs%cfg%jmax)); sgsvisc =0.0_WP
+      allocate(sgsvisc_(fs%cfg%jmin:fs%cfg%jmax)); sgsvisc_=0.0_WP
       ! Integrate all data over x and z
       do k=fs%cfg%kmin_,fs%cfg%kmax_
          do j=fs%cfg%jmin_,fs%cfg%jmax_
             do i=fs%cfg%imin_,fs%cfg%imax_
                vol_(j) = vol_(j)+fs%cfg%vol(i,j,k)
-               Uavg_(j)=Uavg_(j)+fs%cfg%vol(i,j,k)*fs%U(i,j,k)
+               rhoVol_(j) = rhoVol_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)
+               Uavg_(j)=Uavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%U(i,j,k)
+               Vavg_(j)=Vavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%V(i,j,k)
+               Wavg_(j)=Wavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%W(i,j,k)
+               U2_(j)=U2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%U(i,j,k)**2
+               V2_(j)=V2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%V(i,j,k)**2
+               W2_(j)=W2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%W(i,j,k)**2
+               ptke_(j)=ptke_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*lp%ptke(i,j,k)
+               sgsvisc_(j)=sgsvisc_(j)+fs%cfg%vol(i,j,k)*sgs%visc(i,j,k)
             end do
          end do
       end do
       ! All-reduce the data
-      call MPI_ALLREDUCE( vol_, vol,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(vol_, vol,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(rhoVol_, rhoVol,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
       call MPI_ALLREDUCE(Uavg_,Uavg,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(Vavg_,Vavg,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(Wavg_,Wavg,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(U2_,U2,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(V2_,V2,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(W2_,W2,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(ptke_,ptke,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
+      call MPI_ALLREDUCE(sgsvisc_,sgsvisc,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
       do j=fs%cfg%jmin,fs%cfg%jmax
          if (vol(j).gt.0.0_WP) then
-            Uavg(j)=Uavg(j)/vol(j)
+            VF(j)=rhoVol(j)/vol(j)/rho
+            Uavg(j)=Uavg(j)/rhoVol(j)
+            Vavg(j)=Vavg(j)/rhoVol(j)
+            Wavg(j)=Wavg(j)/rhoVol(j)
+            U2(j)=U2(j)/rhoVol(j)
+            V2(j)=V2(j)/rhoVol(j)
+            W2(j)=W2(j)/rhoVol(j)
+            ptke(j)=ptke(j)/rhoVol(j)
+            sgsvisc(j)=sgsvisc(j)/vol(j)
          else
+            VF(j)=0.0_WP
             Uavg(j)=0.0_WP
+            Vavg(j)=0.0_WP
+            Wavg(j)=0.0_WP
+            U2(j)=0.0_WP
+            V2(j)=0.0_WP
+            W2(j)=0.0_WP
+            ptke(j)=0.0_WP
+            sgsvisc(j)=0.0_WP
          end if
       end do
       ! If root, print it out
@@ -100,14 +150,15 @@ module simulation
          filename='Uavg_'
          write(timestamp,'(es12.5)') time%t
          open(newunit=iunit,file=trim(adjustl(filename))//trim(adjustl(timestamp)),form='formatted',status='replace',access='stream',iostat=ierr)
-         write(iunit,'(a12,3x,a12)') 'Height','Uavg'
+         write(iunit,'(a12,3x,a12,3x,a12,3x,a12,3x,a12,3x,a12,3x,a12,3x,a12)') 'Height','VFavg','Uavg','Uvar','Vvar','Wvar','ptke','mu_t'
          do j=fs%cfg%jmin,fs%cfg%jmax
-            write(iunit,'(es12.5,3x,es12.5)') fs%cfg%ym(j),Uavg(j)
+            write(iunit,'(es12.5,3x,es12.5,3x,es12.5,3x,es12.5,3x,es12.5,3x,es12.5,3x,es12.5,3x,es12.5)') fs%cfg%ym(j),VF(j),Uavg(j),&
+                 U2(j)-Uavg(j)**2,V2(j)-Vavg(j)**2,W2(j)-Wavg(j)**2,ptke(j),sgsvisc(j)
          end do
          close(iunit)
       end if
       ! Deallocate work arrays
-      deallocate(Uavg,Uavg_,vol,vol_)
+      deallocate(vol,vol_,rhoVol,rhoVol_,VF,Uavg,Uavg_,Vavg,Vavg_,Wavg,Wavg_,U2_,U2,V2_,V2,W2_,W2,ptke_,ptke,sgsvisc_,sgsvisc)
     end subroutine postproc_vel
 
     !> Function that localizes the bottom (y-) of the domain
@@ -253,6 +304,13 @@ module simulation
             call param_read('Restart from',timestamp,'r')
             ! Read the part file
             call lp%read(filename='restart/part_'//trim(adjustl(timestamp)))
+            do i=1,lp%np_
+               if (lp%p(i)%pos(2).lt.(lp%cfg%y(lp%cfg%jmin)+0.51_WP*lp%p(i)%d).and.(lp%p(i)%id.ne.-1)) then
+                  lp%p(i)%id=-1
+                  lp%p(i)%vel=0.0_WP
+                  lp%p(i)%angVel=0.0_WP
+               end if
+            end do
          else
             if (lp%cfg%amRoot) then
                call lp%resize(np)
@@ -264,7 +322,7 @@ module simulation
                   overlap=.true.
                   do while(overlap)
                      lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin)+0.5_WP*dp,lp%cfg%x(lp%cfg%imax+1)-0.5_WP*dp),&
-                          &       random_uniform(lp%cfg%y(lp%cfg%jmin)+0.5_WP*dp,lp%cfg%y(lp%cfg%jmin)+0.5_WP*lp%cfg%yL),&
+                          &       random_uniform(lp%cfg%y(lp%cfg%jmin)+0.5_WP*dp,lp%cfg%y(lp%cfg%jmin)+0.75_WP*lp%cfg%yL),&
                           &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
                      if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=lp%cfg%zm(lp%cfg%kmin_)
                      overlap=.false.
@@ -496,14 +554,14 @@ module simulation
          lpt: block
            integer :: i
            real(WP) :: dt_done,mydt
-           ! 'Glue' particles to bottom wall
-           do i=1,lp%np_
-              if (lp%p(i)%pos(2).lt.lp%cfg%y(lp%cfg%jmin)+0.51_WP*lp%p(i)%d) then
-                 lp%p(i)%id=-1
-                 lp%p(i)%vel=0.0_WP
-                 lp%p(i)%angVel=0.0_WP
-              end if
-           end do
+           ! ‘Glue’ particles to bottom wall
+           ! do i=1,lp%np_
+           !    if (lp%p(i)%pos(2).lt.(lp%cfg%y(lp%cfg%jmin)+0.5_WP*lp%p(i)%d).and.(lp%p(i)%id.ne.-1)) then
+           !       lp%p(i)%id=-1
+           !       lp%p(i)%vel=0.0_WP
+           !       lp%p(i)%angVel=0.0_WP
+           !    end if
+           ! end do
            ! Get fluid stress
            call fs%get_div_stress(resU,resV,resW)
            ! Zero-out LPT source terms
