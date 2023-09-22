@@ -59,6 +59,8 @@ module simulation
 
    !> Event for post-processing
    type(event) :: ppevt
+   real(WP), dimension(:), allocatable :: Uavg,Uavg_,Vavg,Vavg_,Wavg_,Wavg,U2_,U2,V2_,V2,W2_,W2
+   real(WP), dimension(:), allocatable :: vol,vol_,rhoVol,rhoVol_,VF,ptke_,ptke,sgsvisc_,sgsvisc
    
  contains
 
@@ -69,45 +71,21 @@ module simulation
      use parallel,  only: MPI_REAL_WP
      implicit none
       integer :: iunit,ierr,i,j,k
-      real(WP), dimension(:), allocatable :: Uavg,Uavg_,Vavg,Vavg_,Wavg_,Wavg,U2_,U2,V2_,V2,W2_,W2
-      real(WP), dimension(:), allocatable :: vol,vol_,rhoVol,rhoVol_,VF,ptke_,ptke,sgsvisc_,sgsvisc
       character(len=str_medium) :: filename,timestamp
-      ! Allocate vertical line storage
-      allocate(vol_ (fs%cfg%jmin:fs%cfg%jmax)); vol_ =0.0_WP
-      allocate(vol  (fs%cfg%jmin:fs%cfg%jmax)); vol  =0.0_WP
-      allocate(rhoVol_(fs%cfg%jmin:fs%cfg%jmax)); rhoVol_ =0.0_WP
-      allocate(rhoVol (fs%cfg%jmin:fs%cfg%jmax)); rhoVol  =0.0_WP
-      allocate(VF(fs%cfg%jmin:fs%cfg%jmax)); VF =0.0_WP
-      allocate(Uavg (fs%cfg%jmin:fs%cfg%jmax)); Uavg =0.0_WP
-      allocate(Uavg_(fs%cfg%jmin:fs%cfg%jmax)); Uavg_=0.0_WP
-      allocate(Vavg (fs%cfg%jmin:fs%cfg%jmax)); Vavg =0.0_WP
-      allocate(Vavg_(fs%cfg%jmin:fs%cfg%jmax)); Vavg_=0.0_WP
-      allocate(Wavg (fs%cfg%jmin:fs%cfg%jmax)); Wavg =0.0_WP
-      allocate(Wavg_(fs%cfg%jmin:fs%cfg%jmax)); Wavg_=0.0_WP
-      allocate(U2 (fs%cfg%jmin:fs%cfg%jmax)); U2 =0.0_WP
-      allocate(U2_(fs%cfg%jmin:fs%cfg%jmax)); U2_=0.0_WP
-      allocate(V2 (fs%cfg%jmin:fs%cfg%jmax)); V2 =0.0_WP
-      allocate(V2_(fs%cfg%jmin:fs%cfg%jmax)); V2_=0.0_WP
-      allocate(W2 (fs%cfg%jmin:fs%cfg%jmax)); W2 =0.0_WP
-      allocate(W2_(fs%cfg%jmin:fs%cfg%jmax)); W2_=0.0_WP
-      allocate(ptke_(fs%cfg%jmin:fs%cfg%jmax)); ptke_=0.0_WP
-      allocate(ptke (fs%cfg%jmin:fs%cfg%jmax)); ptke =0.0_WP
-      allocate(sgsvisc (fs%cfg%jmin:fs%cfg%jmax)); sgsvisc =0.0_WP
-      allocate(sgsvisc_(fs%cfg%jmin:fs%cfg%jmax)); sgsvisc_=0.0_WP
       ! Integrate all data over x and z
       do k=fs%cfg%kmin_,fs%cfg%kmax_
          do j=fs%cfg%jmin_,fs%cfg%jmax_
             do i=fs%cfg%imin_,fs%cfg%imax_
                vol_(j) = vol_(j)+fs%cfg%vol(i,j,k)
-               rhoVol_(j) = rhoVol_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)
-               Uavg_(j)=Uavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%U(i,j,k)
-               Vavg_(j)=Vavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%V(i,j,k)
-               Wavg_(j)=Wavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%W(i,j,k)
-               U2_(j)=U2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%U(i,j,k)**2
-               V2_(j)=V2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%V(i,j,k)**2
-               W2_(j)=W2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%W(i,j,k)**2
-               ptke_(j)=ptke_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*lp%ptke(i,j,k)
-               sgsvisc_(j)=sgsvisc_(j)+fs%cfg%vol(i,j,k)*sgs%visc(i,j,k)
+               rhoVol_(j) = rhoVol_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*time%dt
+               Uavg_(j)=Uavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%U(i,j,k)*time%dt
+               Vavg_(j)=Vavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%V(i,j,k)*time%dt
+               Wavg_(j)=Wavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%W(i,j,k)*time%dt
+               U2_(j)=U2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%U(i,j,k)**2*time%dt
+               V2_(j)=V2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%V(i,j,k)**2*time%dt
+               W2_(j)=W2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%W(i,j,k)**2*time%dt
+               ptke_(j)=ptke_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*lp%ptke(i,j,k)*time%dt
+               sgsvisc_(j)=sgsvisc_(j)+fs%cfg%vol(i,j,k)*sgs%visc(i,j,k)*time%dt
             end do
          end do
       end do
@@ -157,8 +135,6 @@ module simulation
          end do
          close(iunit)
       end if
-      ! Deallocate work arrays
-      deallocate(vol,vol_,rhoVol,rhoVol_,VF,Uavg,Uavg_,Vavg,Vavg_,Wavg,Wavg_,U2_,U2,V2_,V2,W2_,W2,ptke_,ptke,sgsvisc_,sgsvisc)
     end subroutine postproc_vel
 
     !> Function that localizes the bottom (y-) of the domain
@@ -520,6 +496,28 @@ module simulation
          ! Create event for data postprocessing
          ppevt=event(time=time,name='Postproc output')
          call param_read('Postproc output period',ppevt%tper)
+         ! Allocate vertical line storage
+         allocate(vol_ (fs%cfg%jmin:fs%cfg%jmax)); vol_ =0.0_WP
+         allocate(vol  (fs%cfg%jmin:fs%cfg%jmax)); vol  =0.0_WP
+         allocate(rhoVol_(fs%cfg%jmin:fs%cfg%jmax)); rhoVol_ =0.0_WP
+         allocate(rhoVol (fs%cfg%jmin:fs%cfg%jmax)); rhoVol  =0.0_WP
+         allocate(VF(fs%cfg%jmin:fs%cfg%jmax)); VF =0.0_WP
+         allocate(Uavg (fs%cfg%jmin:fs%cfg%jmax)); Uavg =0.0_WP
+         allocate(Uavg_(fs%cfg%jmin:fs%cfg%jmax)); Uavg_=0.0_WP
+         allocate(Vavg (fs%cfg%jmin:fs%cfg%jmax)); Vavg =0.0_WP
+         allocate(Vavg_(fs%cfg%jmin:fs%cfg%jmax)); Vavg_=0.0_WP
+         allocate(Wavg (fs%cfg%jmin:fs%cfg%jmax)); Wavg =0.0_WP
+         allocate(Wavg_(fs%cfg%jmin:fs%cfg%jmax)); Wavg_=0.0_WP
+         allocate(U2 (fs%cfg%jmin:fs%cfg%jmax)); U2 =0.0_WP
+         allocate(U2_(fs%cfg%jmin:fs%cfg%jmax)); U2_=0.0_WP
+         allocate(V2 (fs%cfg%jmin:fs%cfg%jmax)); V2 =0.0_WP
+         allocate(V2_(fs%cfg%jmin:fs%cfg%jmax)); V2_=0.0_WP
+         allocate(W2 (fs%cfg%jmin:fs%cfg%jmax)); W2 =0.0_WP
+         allocate(W2_(fs%cfg%jmin:fs%cfg%jmax)); W2_=0.0_WP
+         allocate(ptke_(fs%cfg%jmin:fs%cfg%jmax)); ptke_=0.0_WP
+         allocate(ptke (fs%cfg%jmin:fs%cfg%jmax)); ptke =0.0_WP
+         allocate(sgsvisc (fs%cfg%jmin:fs%cfg%jmax)); sgsvisc =0.0_WP
+         allocate(sgsvisc_(fs%cfg%jmin:fs%cfg%jmax)); sgsvisc_=0.0_WP
          ! Perform the output
          if (ppevt%occurs()) call postproc_vel()
        end block create_postproc
@@ -780,7 +778,8 @@ module simulation
       ! timetracker
 
       ! Deallocate work arrays
-    deallocate(resU,resV,resW,srcUlp,srcVlp,srcWlp,Ui,Vi,Wi,dRHOdt,SR,tmp1,tmp2,tmp3)
+      deallocate(resU,resV,resW,srcUlp,srcVlp,srcWlp,Ui,Vi,Wi,dRHOdt,SR,tmp1,tmp2,tmp3)
+      deallocate(vol,vol_,rhoVol,rhoVol_,VF,Uavg,Uavg_,Vavg,Vavg_,Wavg,Wavg_,U2_,U2,V2_,V2,W2_,W2,ptke_,ptke,sgsvisc_,sgsvisc)
 
    end subroutine simulation_final
 
