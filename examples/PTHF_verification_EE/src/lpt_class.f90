@@ -1048,7 +1048,7 @@ contains
 
        ! Compute particle slip and Reynolds number
        slip=this%p(i)%vel-fvel
-       Rep=frho*norm2(slip)*this%p(i)%d/fvisc
+       Rep=(1-pVF)*frho*norm2(slip)*this%p(i)%d/fvisc
 
        ! Transfer to the grid
        Vp=Pi/6.0_WP*this%p(i)%d**3
@@ -1077,13 +1077,16 @@ contains
        do j=this%cfg%jmino_,this%cfg%jmaxo_
           do i=this%cfg%imino_,this%cfg%imaxo_
              ! Get Eulerian particle data (remove volume fraction)
-             slip(1)=slip_x(i,j,k)
-             slip(2)=slip_y(i,j,k)
-             slip(3)=slip_z(i,j,k)
+             ! slip(1)=slip_x(i,j,k)
+             ! slip(2)=slip_y(i,j,k)
+             ! slip(3)=slip_z(i,j,k)
+             slip(1)=Ui(i,j,k)
+             slip(2)=Vi(i,j,k)
+             slip(3)=Wi(i,j,k)
              Rep=Re(i,j,k)
-             Rep=1.0_WP
              pVF=this%VF(i,j,k)+epsilon(1.0_WP)
              fVF=1.0_WP-pVF
+	     Rep=fVF*rho(i,j,k)*Ui(i,j,k)/visc(i,j,k)
              
              ! Compute PTKE
              this%ptke(i,j,k) = 0.5_WP*(sum(slip**2))*(2.0_WP*pVF + 2.5_WP*pVF*(1.0_WP-pVF)**3*exp(-pVF*sqrt(Rep)))

@@ -275,10 +275,17 @@ contains
          ! Get number of particles
          !Vbox=32.0_WP*cfg%yL*cfg%zL
          Vbox=cfg%xL*cfg%yL*cfg%zL
-         np = int(VFavg*Vbox/Volp)!-1
+         if(VFavg.gt.0.3_WP) then
+            open(unit = 1, file = "PartConfig40")
+            np = int(VFavg*Vbox/(2*Volp))
+         end if
+         if(VFavg.lt.0.3_WP) then
+            open(unit = 1, file = "PartConfig10")
+            np = int(VFavg*Vbox/(Volp))
+         end if
          call lp%resize(np)
-
-         !open(unit = 1, file = "PartConfig")
+         if(VFavg.gt.0.3_WP) open(unit = 1, file = "PartConfig40")
+         if(VFavg.lt.0.3_WP) open(unit = 1, file = "PartConfig10")
          ! Allocate particle in cell arrays
          allocate(npic(     lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_)); npic=0
          allocate(ipic(1:40,lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_)); ipic=0
@@ -289,10 +296,10 @@ contains
             ! Give position (avoid overlap)
             overlap=.true.
             do while (overlap)
-               lp%p(i)%pos=[random_uniform(0.0_WP+dp/2.0_WP,cfg%xL-dp/2.0_WP),&
-                    &       random_uniform(lp%cfg%y(lp%cfg%jmin_)+dp/2.0_WP,lp%cfg%y(lp%cfg%jmax_+1)-dp/2.0_WP),&
-                    &       random_uniform(lp%cfg%z(lp%cfg%kmin_)+dp/2.0_WP,lp%cfg%z(lp%cfg%kmax_+1)-dp/2.0_WP)]
-               !read(1,*) lp%p(i)%pos(1),lp%p(i)%pos(2),lp%p(i)%pos(3)
+               ! lp%p(i)%pos=[random_uniform(0.0_WP+dp/2.0_WP,cfg%xL-dp/2.0_WP),&
+               !      &       random_uniform(lp%cfg%y(lp%cfg%jmin_)+dp/2.0_WP,lp%cfg%y(lp%cfg%jmax_+1)-dp/2.0_WP),&
+               !      &       random_uniform(lp%cfg%z(lp%cfg%kmin_)+dp/2.0_WP,lp%cfg%z(lp%cfg%kmax_+1)-dp/2.0_WP)]
+               read(1,*) lp%p(i)%pos(1),lp%p(i)%pos(2),lp%p(i)%pos(3)
                lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
                overlap=.false.
                do kk=lp%p(i)%ind(3)-1,lp%p(i)%ind(3)+1
@@ -335,7 +342,7 @@ contains
                lp%p(i)%id=int(i,8)
             end if
          end do
-         !close(1)
+         close(1)
          deallocate(npic,ipic)
       end if
       call lp%sync()
@@ -641,7 +648,7 @@ contains
               &          srcU=srcUlp,srcV=srcVlp,srcW=srcWlp,srcSC=srcSClp,fCp=fCp)
          ! Compute PTKE and store source terms
          call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC(ind_T)%SCold,fCp=fCp,&
-              &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%sc,srcU=resU,srcV=resV,srcW=resW,srcT=tmp1,srcY=tmp2)
+             &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%sc,srcU=resU,srcV=resV,srcW=resW,srcT=tmp1,srcY=tmp2)
          srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW
          srcSClp(:,:,:,ind_T)=srcSClp(:,:,:,ind_T)+tmp1
          srcSClp(:,:,:,ind_CO2)=srcSClp(:,:,:,ind_CO2)+tmp2
