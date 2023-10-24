@@ -76,14 +76,14 @@ module simulation
       do k=fs%cfg%kmin_,fs%cfg%kmax_
          do j=fs%cfg%jmin_,fs%cfg%jmax_
             do i=fs%cfg%imin_,fs%cfg%imax_
-               vol_(j) = vol_(j)+fs%cfg%vol(i,j,k)
+               vol_(j) = vol_(j)+fs%cfg%vol(i,j,k)*time%dt
                rhoVol_(j) = rhoVol_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*time%dt
-               Uavg_(j)=Uavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%U(i,j,k)*time%dt
-               Vavg_(j)=Vavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%V(i,j,k)*time%dt
-               Wavg_(j)=Wavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%W(i,j,k)*time%dt
-               U2_(j)=U2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%U(i,j,k)**2*time%dt
-               V2_(j)=V2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%V(i,j,k)**2*time%dt
-               W2_(j)=W2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*fs%W(i,j,k)**2*time%dt
+               Uavg_(j)=Uavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*Ui(i,j,k)*time%dt
+               Vavg_(j)=Vavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*Vi(i,j,k)*time%dt
+               Wavg_(j)=Wavg_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*Wi(i,j,k)*time%dt
+               U2_(j)=U2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*Ui(i,j,k)**2*time%dt
+               V2_(j)=V2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*Vi(i,j,k)**2*time%dt
+               W2_(j)=W2_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*Wi(i,j,k)**2*time%dt
                ptke_(j)=ptke_(j)+fs%cfg%vol(i,j,k)*fs%RHO(i,j,k)*lp%ptke(i,j,k)*time%dt
                sgsvisc_(j)=sgsvisc_(j)+fs%cfg%vol(i,j,k)*sgs%visc(i,j,k)*time%dt
             end do
@@ -264,7 +264,6 @@ module simulation
          character(len=str_medium) :: timestamp
          ! Create solver
          lp=lpt(cfg=cfg,name='LPT')
-         ! Get drag model from the input
          ! Get particle density from the input
          call param_read('Particle density',lp%rho)
          ! Get particle diameter from the input
@@ -312,8 +311,6 @@ module simulation
                   !print *, real(i,WP)/real(np,WP)*100.0_WP,'%'
                   ! Give id
                   lp%p(i)%id=int(i,8)
-                  ! Set the temperature
-                  lp%p(i)%T=298.15_WP
                   ! Give zero velocity
                   lp%p(i)%vel=0.0_WP
                   ! Give zero collision force
@@ -562,6 +559,8 @@ module simulation
            ! end do
            ! Get fluid stress
            call fs%get_div_stress(resU,resV,resW)
+           ! Get vorticity
+           call fs%get_vorticity(SR(1:3,:,:,:))
            ! Zero-out LPT source terms
            srcUlp=0.0_WP; srcVlp=0.0_WP; srcWlp=0.0_WP
            ! Sub-iteratore
@@ -574,7 +573,7 @@ module simulation
               ! Collide and advance particles
               call lp%collide(dt=mydt)
               call lp%advance(dt=mydt,U=fs%U,V=fs%V,W=fs%W,rho=rho0,visc=fs%visc,stress_x=resU,stress_y=resV,stress_z=resW,&
-                   srcU=tmp1,srcV=tmp2,srcW=tmp3)
+                   vortx=SR(1,:,:,:),vorty=SR(2,:,:,:),vortz=SR(3,:,:,:),srcU=tmp1,srcV=tmp2,srcW=tmp3)
               srcUlp=srcUlp+tmp1
               srcVlp=srcVlp+tmp2
               srcWlp=srcWlp+tmp3

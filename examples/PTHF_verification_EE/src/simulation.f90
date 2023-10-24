@@ -691,8 +691,8 @@ contains
                &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%sc,srcU=resU,srcV=resV,srcW=resW,srcT=tmp1,srcY=tmp2)
            srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW
            srcSClp(:,:,:,ind_T)=srcSClp(:,:,:,ind_T)+tmp1
-           sc(ind_T)%diff=diffusivity+lp%diff_pt*rhof
-           sc(ind_T)%diff=sc(ind_T)%diff*(1.0_WP-lp%VF)
+           !sc(ind_T)%diff=diffusivity+lp%diff_pt*rhof
+           !sc(ind_T)%diff=sc(ind_T)%diff*(1.0_WP-lp%VF)
          end block source_terms
          
        end block lpt
