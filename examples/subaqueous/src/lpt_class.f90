@@ -91,7 +91,6 @@ module lpt_class
      real(WP) :: mfr                                     !< Mass flow rate for particle injection
      real(WP), dimension(3) :: inj_pos                   !< Center location to inject particles
      real(WP), dimension(3) :: inj_vel                   !< Celocity assigned during injection
-     real(WP) :: inj_T                                   !< Temperature assigned during injection
      real(WP) :: inj_dmean                               !< Mean diameter assigned during injection
      real(WP) :: inj_dsd                                 !< STD diameter assigned during injection
      real(WP) :: inj_dmin                                !< Min diameter assigned during injection
@@ -808,8 +807,8 @@ contains
     compute_drag: block
       real(WP) :: Re,tau,corr
       ! Particle Reynolds number
-      Re=frho*norm2(p%vel-fvel)*p%d/fvisc+epsilon(1.0_WP)
-      ! Drag correction (Tavanashad et al. (2021) IJMF)
+      Re=frho*norm2(p%vel-fvel)*p%d/fvisc
+      ! Drag correction (Tavanashad et al. IJMF, 2021)
       corr=fVF*(1.0_WP+0.15_WP*Re**(0.687_WP))*(78.96_WP*pVF**3-18.63_WP*pVF**2+9.845_WP*pVF+1.0_WP)
       ! Particle response time
       tau=this%rho*p%d**2/(18.0_WP*fvisc*corr)
@@ -830,9 +829,10 @@ contains
       end if
     end block compute_lift
 
-    ! Compute added mass
+    ! Compute added mass (this should be done last)
     compute_added_mass: block
-
+      acc=acc+0.5_WP*frho/this%rho*(fstress/frho-acc)
+      !acc=(acc+0.5_WP*fstress/this%rho)/(1.0_WP+0.5_WP*frho/this%rho)
     end block compute_added_mass
 
     ! Compute fluid torque (assumed Stokes drag)
