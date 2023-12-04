@@ -679,9 +679,9 @@ contains
                     Pr=visc/diffusivity
                     Nu=(-0.46_WP+1.77_WP*fVF+0.69_WP*fVF**2)/fVf**3+(1.37_WP-2.4_WP*fVf+1.2_WP*fVf**2)*Rep**(0.7_WP)*Pr**(1.0_WP/3.0_WP)
                     ! Temperature source term
-                    srcSClp(i,j,k,ind_T)=-dt*6.0_WP*pVF*Nu*diffusivity*(sc(ind_T)%SC(i,j,k)-Tp)/dp**2
-                    !theta=1-1.6_WP*pVF*fVF-3*pVF*fVF**4*exp(-Rep**0.4_WP*pVF)
-                    !srcSClp(i,j,k,ind_T)=-dt*3.0_WP*Pi*pVF*Nu*diffusivity*(sc(ind_T)%SC(i,j,k)-Tp)/(dp**2*2.0_WP*theta)
+                    !srcSClp(i,j,k,ind_T)=-dt*6.0_WP*pVF*Nu*diffusivity*(sc(ind_T)%SC(i,j,k)-Tp)/dp**2
+                    theta=1-1.6_WP*pVF*fVF-3*pVF*fVF**4*exp(-Rep**0.4_WP*pVF)
+                    srcSClp(i,j,k,ind_T)=-dt*3.0_WP*Pi*pVF*Nu*diffusivity*(sc(ind_T)%SC(i,j,k)-Tp)/(dp**2*2.0_WP*theta)
                  end do
               end do
            end do

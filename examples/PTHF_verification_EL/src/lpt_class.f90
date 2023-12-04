@@ -935,14 +935,18 @@ contains
 
     ! Compute heat transfer
     compute_heat_transfer: block
-      real(WP) :: Pr,Nu
+      use mathtools, only: Pi
+      real(WP) :: Pr,Nu,theta
       
       !fCp=1000.0_WP
       Pr=fvisc/fdiff
       !Nu=(7.0_WP-10.0_WP*fVF+5.0_WP*fVF**2)*(1.0_WP+0.7_WP*Re**(0.2_WP)*Pr**(1.0_WP/3.0_WP))& ! Gunn (1978)
       !     + (1.33_WP-2.4_WP*fVF+1.2_WP*fVF**2)*Re**(0.7_WP)*Pr**(1.0_WP/3.0_WP)
       Nu=(-0.46_WP+1.77_WP*fVF+0.69_WP*fVF**2)/fVf**3+(1.37_WP-2.4_WP*fVf+1.2_WP*fVf**2)*Re**(0.7_WP)*Pr**(1.0_WP/3.0_WP) ! Sun (2015)
+      theta=1-1.6_WP*pVF*fVF-3*pVF*fVF**4*exp(-Re**0.4_WP*pVF)
       dTdt=Nu*fCp*(fT-p%T)/(3.0_WP*Pr*this%pCp*tau)
+      dTdt=dTdt*3*pi/(2*theta*6) ! Correct for EE gas-solid heat transfer coefficient used in Sun/Peng papers
+
     end block compute_heat_transfer
 
   end subroutine get_rhs

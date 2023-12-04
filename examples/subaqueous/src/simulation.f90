@@ -272,6 +272,7 @@ module simulation
          call param_read('Number of particles',np)
          ! Set filter scale to 3.5*dx
          lp%filter_width=3.5_WP*cfg%min_meshsize
+         print *, lp%filter_width
          ! Maximum timestep size used for particles
          call param_read('Particle timestep size',lp_dt_max,default=huge(1.0_WP))
          lp_dt=lp_dt_max

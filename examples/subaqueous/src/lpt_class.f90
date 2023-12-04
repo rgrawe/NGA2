@@ -807,9 +807,9 @@ contains
     compute_drag: block
       real(WP) :: Re,tau,corr
       ! Particle Reynolds number
-      Re=frho*norm2(p%vel-fvel)*p%d/fvisc
+      Re=frho*fVF*norm2(p%vel-fvel)*p%d/fvisc
       ! Drag correction (Tavanashad et al. IJMF, 2021)
-      corr=fVF*(1.0_WP+0.15_WP*Re**(0.687_WP))*(78.96_WP*pVF**3-18.63_WP*pVF**2+9.845_WP*pVF+1.0_WP)
+      corr=(1.0_WP+0.15_WP*Re**(0.687_WP))*(78.96_WP*pVF**3-18.63_WP*pVF**2+9.845_WP*pVF+1.0_WP)
       ! Particle response time
       tau=this%rho*p%d**2/(18.0_WP*fvisc*corr)
       ! Return acceleration and optimal timestep size

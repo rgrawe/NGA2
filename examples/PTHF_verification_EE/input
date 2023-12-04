@@ -1,19 +1,19 @@
 # Parallelization
 
-Partition :	4 1 1
+Partition :	1 1 1
 
 # Mesh definition
-Lx :	128
+Lx :	32
 Ly :	16
-Lz :	2
-nx :	4096
+Lz :	16
+nx :	128
 ny :	16
-nz :	2
+nz :	16
 
 # Time integration
 Max timestep size :	1e-1
 Max cfl number :	1
-Max time : 	200
+Max time : 	100
 
 # Fluid properties
 Dynamic viscosity : 0.01
@@ -22,7 +22,7 @@ CO2 diffusivity : 0.0142857
 Heat capacity : 1
 Density : 1
 Gravity : 0 0 0
-Inlet velocity : 0.01
+Inlet velocity : 1
 
 
 # Scalars

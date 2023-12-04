@@ -62,9 +62,6 @@ module simulation
   end type timer
   type(timer) :: wt_total,wt_vel,wt_pres,wt_lpt,wt_sc,wt_rest
 
-  ! !> Event for post-processing
-  ! type(event) :: ppevt
-
 contains
 
   !> This just updates sc%rho
@@ -244,9 +241,6 @@ contains
       real(WP) :: Lpart,Lparty,Lpartz,Volp,Vbox
       integer :: i,j,k,ix,iy,iz,np,ii,jj,kk,nn,ip,jp,kp,offset,ierr
       logical :: fix
-      integer, dimension(:,:,:), allocatable :: npic      !< Number of particle in cell
-      integer, dimension(:,:,:,:), allocatable :: ipic    !< Index of particle in cell
-      logical :: overlap
       
       ! Create solver
       lp=lpt(cfg=cfg,name='LPT')
@@ -273,52 +267,19 @@ contains
          ! Particle volume
          Volp = Pi/6.0_WP*dp**3
          ! Get number of particles
-         !Vbox=32.0_WP*cfg%yL*cfg%zL
          Vbox=cfg%xL*cfg%yL*cfg%zL
-         if(VFavg.gt.0.3_WP) then
-            open(unit = 1, file = "PartConfig40")
-            np = int(VFavg*Vbox/(2*Volp))
-         end if
-         if(VFavg.lt.0.3_WP) then
-            open(unit = 1, file = "PartConfig10")
-            np = int(VFavg*Vbox/(Volp))
-         end if
+         np = int(VFavg*Vbox/(Volp))
          call lp%resize(np)
-         if(VFavg.gt.0.3_WP) open(unit = 1, file = "PartConfig40")
+         if(VFavg.gt.0.3_WP) open(unit = 1, file = "PartConfig40Big") 
          if(VFavg.lt.0.3_WP) open(unit = 1, file = "PartConfig10")
-         ! Allocate particle in cell arrays
-         allocate(npic(     lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_)); npic=0
-         allocate(ipic(1:40,lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_)); ipic=0
          ! Distribute particles
          do i=1,np
             ! Set the diameter
             lp%p(i)%d=dp
-            ! Give position (avoid overlap)
-            overlap=.true.
-            do while (overlap)
-               ! lp%p(i)%pos=[random_uniform(0.0_WP+dp/2.0_WP,cfg%xL-dp/2.0_WP),&
-               !      &       random_uniform(lp%cfg%y(lp%cfg%jmin_)+dp/2.0_WP,lp%cfg%y(lp%cfg%jmax_+1)-dp/2.0_WP),&
-               !      &       random_uniform(lp%cfg%z(lp%cfg%kmin_)+dp/2.0_WP,lp%cfg%z(lp%cfg%kmax_+1)-dp/2.0_WP)]
-               read(1,*) lp%p(i)%pos(1),lp%p(i)%pos(2),lp%p(i)%pos(3)
-               lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
-               overlap=.false.
-               do kk=lp%p(i)%ind(3)-1,lp%p(i)%ind(3)+1
-                  do jj=lp%p(i)%ind(2)-1,lp%p(i)%ind(2)+1
-                     do ii=lp%p(i)%ind(1)-1,lp%p(i)%ind(1)+1
-                        do nn=1,npic(ii,jj,kk)
-                           j=ipic(nn,ii,jj,kk)
-                           if (sqrt(sum((lp%p(i)%pos-lp%p(j)%pos)**2)).lt.0.5_WP*(lp%p(i)%d+lp%p(j)%d)) overlap=.true.
-                        end do
-                     end do
-                  end do
-               end do
-            end do
-            
+            ! Read in position
+            read(1,*) lp%p(i)%pos(1),lp%p(i)%pos(2),lp%p(i)%pos(3)
             ! Activate the particle
             lp%p(i)%flag=0
-            ip=lp%p(i)%ind(1); jp=lp%p(i)%ind(2); kp=lp%p(i)%ind(3)
-            npic(ip,jp,kp)=npic(ip,jp,kp)+1
-            ipic(npic(ip,jp,kp),ip,jp,kp)=i
             ! Set the temperature
             lp%p(i)%T=Tp
             ! Give zero mass of carbamate
@@ -330,7 +291,6 @@ contains
             lp%p(i)%Tcol=0.0_WP
             ! Give zero dt
             lp%p(i)%dt=0.0_WP
-            
             ! Set ID
             if (fix) then
                if (lp%p(i)%pos(1).le.x0) then
@@ -343,7 +303,6 @@ contains
             end if
          end do
          close(1)
-         deallocate(npic,ipic)
       end if
       call lp%sync()
 
@@ -616,7 +575,7 @@ contains
          sc(ind_T)%SCold=sc(ind_T)%SC; !call lp%filter(sc(ind_T)%SCold)
          sc(ind_CO2)%SCold=sc(ind_CO2)%SC; !call lp%filter(sc(ind_CO2)%SCold)
 
-         ! ! Apply scalar boundary conditions
+         ! ! Re-Apply scalar boundary conditions if pre-filtering
          ! scalar_inlet: block
          !   use vdscalar_class, only: bcond
          !   type(bcond), pointer :: mybc
@@ -630,6 +589,7 @@ contains
          !   end do
          ! end block scalar_inlet
 
+         ! Track filtered tempreature and Re for monitoring
          Tf=sc(ind_T)%SCold
          do k=fs%cfg%kmin_,fs%cfg%kmax_
             do j=fs%cfg%jmin_,fs%cfg%jmax_
@@ -697,7 +657,7 @@ contains
 
              ! Form implicit residual
              call sc(ii)%solve_implicit(time%dt,resSC,fs%rhoU,fs%rhoV,fs%rhoW)
-
+             
              ! Apply this residual
              sc(ii)%SC=2.0_WP*sc(ii)%SC-sc(ii)%SCold+resSC
 
@@ -722,15 +682,6 @@ contains
              call sc(ii)%rho_multiply()
           end do
 
-          ! Update dependent variables
-          !resSC=sc(1)%rho
-          !call get_sc_rho()
-          ! Rescale scalars
-          !do ii=1,nscalar
-          !   sc(ii)%sc=sc(ii)%sc*resSC/sc(ii)%rho
-          !end do
-          !call get_viscosity
-          !call get_thermal_diffusivity
           wt_sc%time=wt_sc%time+parallel_time()-wt_sc%time_in
           ! ===================================================
 
@@ -800,9 +751,8 @@ contains
 
           ! Solve Poisson equation
           wt_vel%time=wt_vel%time+parallel_time()-wt_vel%time_in
-          ! Compute rate-of-change of density accounting for particles and species
-          !call sc(1)%get_drhodt(dt=time%dt,drhodt=resSC)
-          resSC=(sc(1)%rho-sc(1)%rhoold)/time%dt!-(srcSClp(:,:,:,ind_CO2)-tmp2)/time%dt
+          ! Compute rate-of-change of density
+          resSC=(sc(1)%rho-sc(1)%rhoold)/time%dt
           call fs%cfg%sync(resSC)
           wt_pres%time_in=parallel_time()
           call fs%correct_mfr(drhodt=resSC)
