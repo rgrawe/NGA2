@@ -137,38 +137,6 @@ module simulation
       end if
     end subroutine postproc_vel
 
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-=======
-=======
-     !> Function that localizes the bottom (y-) of the domain
-   function bottom_of_domain(pg,i,j,k) result(isIn)
-     use pgrid_class, only: pgrid
-     implicit none
-     class(pgrid), intent(in) :: pg
-     integer, intent(in) :: i,j,k
-     logical :: isIn
-     isIn=.false.
-     if (j.eq.pg%jmin) isIn=.true.
-   end function bottom_of_domain
->>>>>>> 18dc3437d152014025fe9eabffc1637975a8591c
-
-   !> Function that localizes the top (y+) of the domain
-   function top_of_domain(pg,i,j,k) result(isIn)
-     use pgrid_class, only: pgrid
-     implicit none
-     class(pgrid), intent(in) :: pg
-     integer, intent(in) :: i,j,k
-     logical :: isIn
-     isIn=.false.
-     if (j.eq.pg%jmax+1) isIn=.true.
-   end function top_of_domain
-
-
-<<<<<<< HEAD
->>>>>>> Stashed changes
-=======
->>>>>>> 18dc3437d152014025fe9eabffc1637975a8591c
    !> Initialization of problem solver
    subroutine simulation_init
      use param, only: param_read
@@ -223,17 +191,10 @@ module simulation
 
        ! Create a low Mach flow solver with bconds
        create_flow_solver: block
-<<<<<<< HEAD
          ! Create flow solver
          fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
-=======
-         use lowmach_class,   only: dirichlet
          ! Create flow solver
          fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
-         ! Define boundary conditions
-         call fs%add_bcond(name='bottom',type=dirichlet,locator=bottom_of_domain,face='y',dir=-1,canCorrect=.false.)
-         call fs%add_bcond(name='top',type=dirichlet,locator=top_of_domain,face='y',dir=+1,canCorrect=.true. )
->>>>>>> 18dc3437d152014025fe9eabffc1637975a8591c
          ! Assign constant density
          call param_read('Density',rho); fs%rho=rho
          ! Assign constant viscosity
@@ -398,20 +359,7 @@ module simulation
            meanU=Ubulk
            meanW=Wbulk
         end if
-<<<<<<< HEAD
-=======
-        ! Set no-slip walls
-        call fs%get_bcond('bottom',mybc)
-        do n=1,mybc%itr%no_
-           i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-           fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
-        end do
-        call fs%get_bcond('top',mybc)
-        do n=1,mybc%itr%no_
-           i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-           fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
-        end do
->>>>>>> 18dc3437d152014025fe9eabffc1637975a8591c
+
         ! Set density from particle volume fraction and store initial density
         fs%rho=rho*(1.0_WP-lp%VF)
         rho0=rho
@@ -570,8 +518,6 @@ module simulation
          lpt: block
            integer :: i
            real(WP) :: dt_done,mydt
-<<<<<<< HEAD
-=======
            ! ‘Glue’ particles to bottom wall
            ! do i=1,lp%np_
            !    if (lp%p(i)%pos(2).lt.(lp%cfg%y(lp%cfg%jmin)+0.5_WP*lp%p(i)%d).and.(lp%p(i)%id.ne.-1)) then
@@ -580,7 +526,6 @@ module simulation
            !       lp%p(i)%angVel=0.0_WP
            !    end if
            ! end do
->>>>>>> 18dc3437d152014025fe9eabffc1637975a8591c
            ! Get fluid stress
            call fs%get_div_stress(resU,resV,resW)
            ! Get vorticity
@@ -647,9 +592,9 @@ module simulation
             do k=fs%cfg%kmin_,fs%cfg%kmax_
                do j=fs%cfg%jmin_,fs%cfg%jmax_
                   do i=fs%cfg%imin_,fs%cfg%imax_
-                     resU(i,j,k)=resU(i,j,k)+sum(fs%itpr_x(:,i,j,k)*srcUlp(i-1:i,j,k))
-                     resV(i,j,k)=resV(i,j,k)+sum(fs%itpr_y(:,i,j,k)*srcVlp(i,j-1:j,k))
-                     resW(i,j,k)=resW(i,j,k)+sum(fs%itpr_z(:,i,j,k)*srcWlp(i,j,k-1:k))
+                     if (fs%umask(i,j,k).eq.0) resU(i,j,k)=resU(i,j,k)+sum(fs%itpr_x(:,i,j,k)*srcUlp(i-1:i,j,k))
+                     if (fs%vmask(i,j,k).eq.0) resV(i,j,k)=resV(i,j,k)+sum(fs%itpr_y(:,i,j,k)*srcVlp(i,j-1:j,k))
+                     if (fs%wmask(i,j,k).eq.0) resW(i,j,k)=resW(i,j,k)+sum(fs%itpr_z(:,i,j,k)*srcWlp(i,j,k-1:k))
                   end do
                end do
             end do
@@ -696,29 +641,6 @@ module simulation
           call fs%apply_bcond(time%tmid,time%dtmid)
           call fs%rho_multiply()
           call fs%apply_bcond(time%tmid,time%dtmid)
-
-<<<<<<< HEAD
-=======
-           ! Reset Dirichlet BCs
-          dirichlet_velocity: block
-            use lowmach_class, only: bcond
-            type(bcond), pointer :: mybc
-            integer :: n,i,j,k
-            call fs%get_bcond('bottom',mybc)
-            do n=1,mybc%itr%no_
-               i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-               fs%rhoU(i,j,k)=0.0_WP; fs%rhoV(i,j,k)=0.0_WP; fs%rhoW(i,j,k)=0.0_WP
-               fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
-            end do
-             call fs%get_bcond('top',mybc)
-            do n=1,mybc%itr%no_
-               i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-               fs%rhoU(i,j,k)=0.0_WP; fs%rhoV(i,j,k)=0.0_WP; fs%rhoW(i,j,k)=0.0_WP
-               fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
-            end do
-          end block dirichlet_velocity
-
->>>>>>> 18dc3437d152014025fe9eabffc1637975a8591c
 
           ! Solve Poisson equation
           call fs%correct_mfr(drhodt=dRHOdt)
