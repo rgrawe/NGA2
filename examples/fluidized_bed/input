@@ -1,4 +1,8 @@
 # Parallelization
+<<<<<<< HEAD
+
+=======
+>>>>>>> c5f1a3f8d5d9dc4eb48971841cd360ac2cdfe934
 Partition :	4 1 1
 
 # Mesh definition
@@ -18,10 +22,20 @@ Max time : 		10
 Dynamic viscosity : 1.8e-5
 Thermal diffusivity :   0.001
 CO2 diffusivity : 0.001
+Thermal diffusivity :   0.001
+CO2 diffusivity : 0.001
 Density :   1.2
+Pressure : 101325
 Pressure : 101325
 Gravity :   -9.81 0 0
 Inlet velocity : 0.1
+
+
+# Scalars
+Initial T : 350
+Initial CO2 : 0.0
+Inlet T : 350
+Inlet CO2 : 0.1
 
 
 # Scalars
@@ -39,6 +53,7 @@ Particle temperature : 350
 Particle diameter : 200e-6
 Filter width : 600e-6
 Collision timescale : 15e-5
+<<<<<<< HEAD
 
 # Adsorption
 Adsorption model : Lee
@@ -50,6 +65,9 @@ Pressure iteration : 	100
 # Implicit velocity solver
 Implicit tolerance : 	1e-6
 Implicit iteration : 	100
+=======
+Coefficient of restitution : 0.8
+>>>>>>> c5f1a3f8d5d9dc4eb48971841cd360ac2cdfe934
 
 # Ensight output
 Ensight output period : 80e-5

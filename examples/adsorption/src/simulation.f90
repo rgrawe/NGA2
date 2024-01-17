@@ -3,6 +3,9 @@ module simulation
   use precision,         only: WP
   use geometry,          only: cfg
   use lpt_class,         only: lpt
+  use fourier3d_class,   only: fourier3d
+  use hypre_uns_class,   only: hypre_uns
+  use hypre_str_class,   only: hypre_str
   use lowmach_class,     only: lowmach
   use vdscalar_class,    only: vdscalar
   use timetracker_class, only: timetracker
@@ -16,6 +19,9 @@ module simulation
 
   !> Get a scalar solver, an LPT solver, a lowmach solver, and corresponding time tracker
   type(vdscalar), dimension(2), public :: sc
+  type(fourier3d),   public :: ps
+  type(hypre_str),   public :: vs
+  type(hypre_uns), dimension(:), allocatable, public :: ss
   type(lowmach),     public :: fs
   type(lpt),         public :: lp
   type(timetracker), public :: time
@@ -42,6 +48,7 @@ module simulation
   !> Scalar indices
   integer, parameter :: ind_T  =1
   integer, parameter :: ind_CO2=2
+  integer :: nscalar=2
 
   !> Thermo-chemistry parameters
   real(WP), parameter :: Rcst=8.314_WP         !< J/(mol.K)
@@ -127,6 +134,7 @@ contains
 
    !> Calculate the total mass of CO2 and N2
    subroutine get_mass
+     call sc(ind_CO2)%rho_multiply()
      call fs%cfg%integrate(sc(ind_CO2)%rhoSC,integral=CO2mass)
      call fs%cfg%integrate((1.0_WP-sc(ind_CO2)%SC)*sc(ind_CO2)%rho,integral=N2mass)
      delta_CO2mass=CO2mass_init-CO2mass
@@ -150,8 +158,8 @@ contains
     ! Create a low Mach flow solver without bconds
     ! Density will be computed later
     create_flow_solver: block
-      use ils_class,     only: pcg_pfmg,pcg_amg
-      ! use lowmach_class, only: dirichlet,clipped_neumann
+      use hypre_uns_class, only: gmres_amg  
+      use hypre_str_class, only: pcg_pfmg
       ! Create flow solver
       fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
       ! Assign initial viscosity
@@ -159,13 +167,13 @@ contains
       ! Assign acceleration of gravity
       call param_read('Gravity',fs%gravity)
       ! Configure pressure solver
-      call param_read('Pressure iteration',fs%psolv%maxit)
-      call param_read('Pressure tolerance',fs%psolv%rcvg)
+      ps=fourier3d(cfg=cfg,name='Pressure',nst=7)
       ! Configure implicit velocity solver
-      call param_read('Implicit iteration',fs%implicit%maxit)
-      call param_read('Implicit tolerance',fs%implicit%rcvg)
+      vs=hypre_str(cfg=cfg,name='Velocity',method=pcg_pfmg,nst=7)
+      call param_read('Implicit iteration',vs%maxit)
+      call param_read('Implicit tolerance',vs%rcvg)
       ! Setup the solver
-      call fs%setup(pressure_ils=pcg_amg,implicit_ils=pcg_pfmg)
+      call fs%setup(pressure_solver=ps,implicit_solver=vs)
     end block create_flow_solver
 
 
@@ -188,8 +196,9 @@ contains
 
     ! Create scalar solvers for T and CO2
     create_scalar: block
-      use ils_class,      only: gmres
+      use hypre_uns_class, only: pcg_amg, gmres 
       use vdscalar_class, only: quick
+      integer :: ii
       ! Create scalar solvers
       sc(ind_T)  =vdscalar(cfg=cfg,scheme=quick,name='Temperature')
       sc(ind_CO2)=vdscalar(cfg=cfg,scheme=quick,name='CO2')
@@ -198,12 +207,15 @@ contains
       sc(ind_T)%diff=diffusivity
       call param_read('CO2 diffusivity',diffusivity)
       sc(ind_CO2)%diff=diffusivity
+
       ! Configure implicit scalar solver
-      sc(ind_T)%implicit%maxit=fs%implicit%maxit; sc(ind_T)%implicit%rcvg=fs%implicit%rcvg
-      sc(ind_CO2)%implicit%maxit=fs%implicit%maxit; sc(ind_CO2)%implicit%rcvg=fs%implicit%rcvg
-      ! Setup the solver
-      call sc(ind_T)%setup(implicit_ils=gmres)
-      call sc(ind_CO2)%setup(implicit_ils=gmres)
+      allocate(ss(nscalar))
+      do ii=1,nscalar
+         ! Setup the solver
+         ss(ii)%maxit=vs%maxit; ss(ii)%rcvg=vs%rcvg
+         ss(ii)=hypre_uns(cfg=cfg,name='Scalar',method=pcg_amg,nst=13)
+         call sc(ii)%setup(implicit_solver=ss(ii))
+      end do
     end block create_scalar
 
     ! Initialize our LPT solver
@@ -222,6 +234,8 @@ contains
       call param_read('Particle density',lp%rho)
       ! Get particle diameter from the input
       call param_read('Particle diameter',dp)
+      ! Get particle heat capacity from the input
+      call param_read('Particle heat capacity',lp%Cp)
       ! Set filter scale to 3.5*dx
       lp%filter_width=3.5_WP*cfg%min_meshsize
 
@@ -233,7 +247,7 @@ contains
          ! Distribute particles
          do i=1,np
             ! Give position
-            lp%p(i)%pos(1) = 0.5_WP*lp%cfg%xL
+            lp%p(i)%pos(1) = lp%cfg%xL*(2*i-1)/(2*np)
             lp%p(i)%pos(2) = 0.0_WP
             lp%p(i)%pos(3) = 0.0_WP
             ! Give id
@@ -273,14 +287,16 @@ contains
     ! Create partmesh object for Lagrangian particle output
     create_pmesh: block
       integer :: i
-      pmesh=partmesh(nvar=1,nvec=3,name='lpt')
+      pmesh=partmesh(nvar=2,nvec=3,name='lpt')
       pmesh%varname(1)='diameter'
+      pmesh%varname(2)='Mc'
       pmesh%vecname(1)='velocity'
       pmesh%vecname(2)='ang_vel'
       pmesh%vecname(3)='Fcol'
       call lp%update_partmesh(pmesh)
       do i=1,lp%np_
          pmesh%var(1,i)=lp%p(i)%d
+         pmesh%var(2,i)=lp%p(i)%Mc
          pmesh%vec(:,1,i)=lp%p(i)%vel
          pmesh%vec(:,2,i)=lp%p(i)%angVel
          pmesh%vec(:,3,i)=lp%p(i)%Acol
@@ -309,6 +325,7 @@ contains
       ! Update transport variables
       call get_viscosity
       call get_thermal_diffusivity
+      
     end block initialize_scalar
 
 
@@ -322,7 +339,7 @@ contains
       call fs%get_div(drhodt=dRHOdt)
     end block initialize_velocity
 
-    ! Add Ensight output
+! Add Ensight output
     create_ensight: block
       ! Create Ensight output from cfg
       ens_out=ensight(cfg=cfg,name='adsorption')
@@ -333,9 +350,6 @@ contains
       call ens_out%add_particle('particles',pmesh)
       call ens_out%add_vector('velocity',Ui,Vi,Wi)
       call ens_out%add_scalar('epsp',lp%VF)
-      ! call ens_out%add_scalar('Tf',lp%Tf)
-      ! call ens_out%add_scalar('Yf',lp%Yf)
-      call ens_out%add_scalar('density',fs%rho)
       call ens_out%add_scalar('pressure',fs%P)
       call ens_out%add_scalar('temperature',sc(ind_T)%SC)
       call ens_out%add_scalar('CO2',sc(ind_CO2)%SC)
@@ -449,7 +463,7 @@ contains
        ! Collide and advance particles
        call lp%collide(dt=time%dtmid)
        rholp=fs%rho/(1.0_WP-lp%VF)
-       call lp%advance(dt=time%dtmid,U=fs%U,V=fs%V,W=fs%W,rho=rholp,visc=fs%visc,stress_x=resU,stress_y=resV,stress_z=resW,&
+       call lp%advance(dt=time%dtmid,U=fs%U,V=fs%V,W=fs%W,rho=rholp,visc=fs%visc,diff=sc(ind_T)%diff,stress_x=resU,stress_y=resV,stress_z=resW,&
             T=sc(ind_T)%SC,YCO2=sc(ind_CO2)%SC,srcU=srcUlp,srcV=srcVlp,srcW=srcWlp,srcSC=srcSClp)
        
        ! Perform sub-iterations
@@ -457,11 +471,11 @@ contains
           ! ============= SCALAR SOLVER =======================
           do ii=1,2
              ! Build mid-time scalar
-             sc(ii)%SC=0.5_WP*(sc(ii)%SC+sc(ii)%SCold)    
+             sc(ii)%SC=0.5_WP*(sc(ii)%SC+sc(ii)%SCold)
 
              ! Explicit calculation of drhoSC/dt from scalar equation
              call sc(ii)%get_drhoSCdt(resSC,fs%rhoU,fs%rhoV,fs%rhoW)
-
+             
              ! Assemble explicit residual
              resSC=time%dt*resSC-(2.0_WP*sc(ii)%rho*sc(ii)%SC-(sc(ii)%rho+sc(ii)%rhoold)*sc(ii)%SCold)
              
@@ -469,13 +483,10 @@ contains
              resSC = resSC + srcSClp(:,:,:,ii)
              
              ! Form implicit residual
-             call sc(ii)%solve_implicit(time%dt,resSC,fs%rhoU,fs%rhoV,fs%rhoW)
-                          
+             ! call sc(ii)%solve_implicit(time%dt,resSC,fs%rhoU,fs%rhoV,fs%rhoW)
+             
              ! Apply this residual
-             sc(ii)%SC=2.0_WP*sc(ii)%SC-sc(ii)%SCold+resSC
-
-             ! Apply other boundary conditions on the resulting field
-             call sc(ii)%apply_bcond(time%t,time%dt)
+             sc(ii)%SC=2.0_WP*sc(ii)%SC-sc(ii)%SCold+resSC/sc(ii)%rho
           end do
           ! ===================================================
 
@@ -484,9 +495,10 @@ contains
           rescale_scalars: block
             real(WP) :: drho,rho0
             call sc(ind_CO2)%rho_multiply()
+            !call sc(ind_T)%rho_multiply()
             call fs%cfg%integrate(sc(ind_CO2)%rhoold,integral=mean_rho); mean_rho=mean_rho/fs%cfg%vol_total
             rho0=mean_rho
-!!            call fs%cfg%integrate(srcSClp(:,:,:,ind_CO2),integral=drho); drho=drho/fs%cfg%vol_total
+            call fs%cfg%integrate(srcSClp(:,:,:,ind_CO2),integral=drho); drho=drho/fs%cfg%vol_total
             mean_rho=mean_rho+drho
 
             ! Rescale density
@@ -495,7 +507,7 @@ contains
             
             ! Rescale scalars
             sc(ind_CO2)%SC=sc(ind_CO2)%rhoSC/sc(ind_CO2)%rho
-            sc(ind_T)%SC=Ti
+            !sc(ind_T)%SC=sc(ind_T)%rhoSC/sc(ind_T)%rho
           end block rescale_scalars
           
           ! Update pressure
@@ -508,7 +520,7 @@ contains
           ! ===================================================
 
           ! Build n+1 density
-          fs%rho=0.5_WP*(fs%rho+fs%rhoold)
+          fs%rho=0.5_WP*(sc(1)%rho+sc(1)%rhoold)
 
           ! Build mid-time velocity and momentum
           fs%U=0.5_WP*(fs%U+fs%Uold); fs%rhoU=0.5_WP*(fs%rhoU+fs%rhoUold)
@@ -550,7 +562,6 @@ contains
 
           ! Apply other boundary conditions and update momentum
           call fs%rho_multiply()
-          !call sc(ind_CO2)%rho_multiply()
 
           ! Solve Poisson equation
           !dRhodt=0.0_WP
@@ -585,6 +596,9 @@ contains
             do i=1,lp%np_
                pmesh%var(1,i)=lp%p(i)%d
                pmesh%var(2,i)=lp%p(i)%Mc
+               pmesh%vec(:,1,i)=lp%p(i)%vel
+               pmesh%vec(:,2,i)=lp%p(i)%angVel
+               pmesh%vec(:,3,i)=lp%p(i)%Acol
             end do
           end block update_pmesh
           call ens_out%write_data(time%t)
@@ -602,9 +616,6 @@ contains
        call lptfile%write()
        !stop
     end do
-
-    ! Ouput particle bed
-    !call lp%write(filename='part.file')
 
   end subroutine simulation_run
 

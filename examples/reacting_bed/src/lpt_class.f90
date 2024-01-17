@@ -1061,7 +1061,8 @@ contains
     call this%filter(slip_y)
     call this%filter(slip_z)
     call this%filter(Re)
-    
+
+    PTRS=0.0_WP
     do k=this%cfg%kmino_,this%cfg%kmaxo_
        do j=this%cfg%jmino_,this%cfg%jmaxo_
           do i=this%cfg%imino_,this%cfg%imaxo_
@@ -1372,7 +1373,6 @@ contains
     if (allocated(alpha)) deallocate(alpha)
     if (allocated(PTHF)) deallocate(PTHF)
     if (allocated(PTMF)) deallocate(PTMF)
-    
   end subroutine get_ptke
 
   !> Stores scalar information

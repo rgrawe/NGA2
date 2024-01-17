@@ -64,6 +64,9 @@ module simulation
   end type timer
   type(timer) :: wt_total,wt_vel,wt_pres,wt_lpt,wt_sc,wt_rest
 
+  ! !> Event for post-processing
+  ! type(event) :: ppevt
+
 contains
 
   !> Define here our equation of state - rho(P,T,Yk)
@@ -606,7 +609,6 @@ contains
          ! srcSClp(:,:,:,ind_CO2)=srcSClp(:,:,:,ind_CO2)+tmp2
        end block lpt
        wt_lpt%time=wt_lpt%time+parallel_time()-wt_lpt%time_in
-       
        ! Remember old scalar
        do ii=1,nscalar
           sc(ii)%rhoold=sc(ii)%rho
@@ -656,7 +658,7 @@ contains
 
              ! Apply other boundary conditions on the resulting field
              call sc(ii)%apply_bcond(time%t,time%dt)
-
+             
              ! Apply scalar boundary conditions
               scalar_bcond: block
                 use vdscalar_class, only: bcond
