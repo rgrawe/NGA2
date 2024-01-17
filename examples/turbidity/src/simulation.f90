@@ -54,6 +54,39 @@ module simulation
 
 contains
 
+  !> Function that localizes the left (x-) of the domain
+   function left_of_domain(pg,i,j,k) result(isIn)
+     use pgrid_class, only: pgrid
+     implicit none
+     class(pgrid), intent(in) :: pg
+     integer, intent(in) :: i,j,k
+     logical :: isIn
+     isIn=.false.
+     if (i.eq.pg%imin) isIn=.true.
+   end function left_of_domain
+
+   !> Function that localizes the right (x+) of the domain
+   function right_of_domain(pg,i,j,k) result(isIn)
+     use pgrid_class, only: pgrid
+     implicit none
+     class(pgrid), intent(in) :: pg
+     integer, intent(in) :: i,j,k
+     logical :: isIn
+     isIn=.false.
+     if (i.eq.pg%imax+1) isIn=.true.
+   end function right_of_domain
+  
+   !> Function that localizes the bottom (y-) of the domain
+   function bottom_of_domain(pg,i,j,k) result(isIn)
+     use pgrid_class, only: pgrid
+     implicit none
+     class(pgrid), intent(in) :: pg
+     integer, intent(in) :: i,j,k
+     logical :: isIn
+     isIn=.false.
+     if (j.eq.pg%jmin) isIn=.true.
+   end function bottom_of_domain
+
    !> Function that localizes the top (y+) of the domain
    function top_of_domain(pg,i,j,k) result(isIn)
      use pgrid_class, only: pgrid
@@ -119,10 +152,13 @@ contains
     ! Create a low Mach flow solver with bconds
     create_flow_solver: block
       use hypre_str_class, only: pcg_pfmg
-      use lowmach_class,   only: clipped_neumann,slip
+      use lowmach_class,   only: dirichlet,clipped_neumann,slip
       ! Create flow solver
       fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
       ! Define boundary conditions
+      call fs%add_bcond(name='left',type=dirichlet,locator=left_of_domain,face='x',dir=-1,canCorrect=.false.)
+      call fs%add_bcond(name='right',type=dirichlet,locator=right_of_domain,face='x',dir=+1,canCorrect=.false.)
+      call fs%add_bcond(name='bottom',type=dirichlet,locator=bottom_of_domain,face='y',dir=-1,canCorrect=.false.)
       call fs%add_bcond(name='top',type=slip,locator=top_of_domain,face='y',dir=+1,canCorrect=.true. )
       ! Assign constant density
       call param_read('Density',rho); fs%rho=rho
@@ -267,6 +303,22 @@ contains
       integer :: n,i,j,k
       ! Zero initial field
       fs%U=0.0_WP; fs%V=0.0_WP; fs%W=0.0_WP
+      ! Set no-slip walls
+      call fs%get_bcond('left',mybc)
+      do n=1,mybc%itr%no_
+         i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+         fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
+      end do
+      call fs%get_bcond('right',mybc)
+      do n=1,mybc%itr%no_
+         i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+         fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
+      end do
+      call fs%get_bcond('bottom',mybc)
+      do n=1,mybc%itr%no_
+         i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+         fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
+      end do
       ! Set density from particle volume fraction and store initial density
       fs%rho=rho*(1.0_WP-lp%VF)
       rho0=rho
@@ -498,6 +550,31 @@ contains
           call fs%apply_bcond(time%tmid,time%dtmid)
           call fs%rho_multiply()
           call fs%apply_bcond(time%tmid,time%dtmid)
+
+          ! Reset Dirichlet BCs
+          dirichlet_velocity: block
+            use lowmach_class, only: bcond
+            type(bcond), pointer :: mybc
+            integer :: n,i,j,k
+            call fs%get_bcond('bottom',mybc)
+            do n=1,mybc%itr%no_
+               i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+               fs%rhoU(i,j,k)=0.0_WP; fs%rhoV(i,j,k)=0.0_WP; fs%rhoW(i,j,k)=0.0_WP
+               fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
+            end do
+            call fs%get_bcond('left',mybc)
+            do n=1,mybc%itr%no_
+               i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+               fs%rhoU(i,j,k)=0.0_WP; fs%rhoV(i,j,k)=0.0_WP; fs%rhoW(i,j,k)=0.0_WP
+               fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
+            end do
+            call fs%get_bcond('right',mybc)
+            do n=1,mybc%itr%no_
+               i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+               fs%rhoU(i,j,k)=0.0_WP; fs%rhoV(i,j,k)=0.0_WP; fs%rhoW(i,j,k)=0.0_WP
+               fs%U(i,j,k)=0.0_WP; fs%V(i,j,k)=0.0_WP; fs%W(i,j,k)=0.0_WP
+            end do
+          end block dirichlet_velocity
 
           wt_vel%time=wt_vel%time+parallel_time()-wt_vel%time_in
 
