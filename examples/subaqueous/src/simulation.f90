@@ -137,6 +137,22 @@ module simulation
       end if
     end subroutine postproc_vel
 
+<<<<<<< Updated upstream
+=======
+
+   !> Function that localizes the top (y+) of the domain
+   function top_of_domain(pg,i,j,k) result(isIn)
+     use pgrid_class, only: pgrid
+     implicit none
+     class(pgrid), intent(in) :: pg
+     integer, intent(in) :: i,j,k
+     logical :: isIn
+     isIn=.false.
+     if (j.eq.pg%jmax+1) isIn=.true.
+   end function top_of_domain
+
+
+>>>>>>> Stashed changes
    !> Initialization of problem solver
    subroutine simulation_init
      use param, only: param_read

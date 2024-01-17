@@ -119,7 +119,11 @@ contains
     ! Create a low Mach flow solver with bconds
     create_flow_solver: block
       use hypre_str_class, only: pcg_pfmg
+<<<<<<< Updated upstream
       use lowmach_class,   only: clipped_neumann,slip
+=======
+      use lowmach_class,   only: slip
+>>>>>>> Stashed changes
       ! Create flow solver
       fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
       ! Define boundary conditions

@@ -587,31 +587,6 @@ contains
          ! Get fluid stress
          call fs%get_div_stress(resU,resV,resW)
          ! Filter fluid quantities
-         fs%Uold=fs%U; call lp%filter(fs%Uold)!; call lp%filter(Ui)
-         fs%Vold=fs%V; call lp%filter(fs%Vold)!; call lp%filter(Vi)
-         fs%Wold=fs%W; call lp%filter(fs%Wold)!; call lp%filter(Wi)
-         sc(ind_T)%SCold=sc(ind_T)%SC; call lp%filter(sc(ind_T)%SCold)
-         sc(ind_CO2)%SCold=sc(ind_CO2)%SC; call lp%filter(sc(ind_CO2)%SCold)
-         ! Collide and advance particles
-         call lp%collide(dt=time%dtmid)
-         call lp%advance(dt=time%dtmid,U=fs%Uold,V=fs%Vold,W=fs%Wold,rho=rhof,visc=fs%visc,diff=sc(ind_T)%diff,&
-              &          stress_x=resU,stress_y=resV,stress_z=resW,T=sc(ind_T)%SCold,YCO2=sc(ind_CO2)%SCold,&
-              &          srcU=srcUlp,srcV=srcVlp,srcW=srcWlp,srcSC=srcSClp,fCp=fCp)
-         ! Compute PTKE and store source terms
-         call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC(ind_T)%SC,fCp=fCp,&
-              &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%SC,srcU=resU,srcV=resV,srcW=resW,srcT=tmp1,srcY=tmp2)
-         srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW
-         srcSClp(:,:,:,ind_T)=srcSClp(:,:,:,ind_T)+tmp1
-         srcSClp(:,:,:,ind_CO2)=srcSClp(:,:,:,ind_CO2)+tmp2
-       end block lpt
-       wt_lpt%time=wt_lpt%time+parallel_time()-wt_lpt%time_in
-
-       ! Particle solver
-       wt_lpt%time_in=parallel_time()
-       lpt: block
-         ! Get fluid stress
-         call fs%get_div_stress(resU,resV,resW)
-         ! Filter fluid quantities
          fs%Uold=fs%U; !call lp%filter(fs%Uold); call lp%filter(Ui)
          fs%Vold=fs%V; !call lp%filter(fs%Vold); call lp%filter(Vi)
          fs%Wold=fs%W; !call lp%filter(fs%Wold); call lp%filter(Wi)
@@ -631,6 +606,7 @@ contains
          ! srcSClp(:,:,:,ind_CO2)=srcSClp(:,:,:,ind_CO2)+tmp2
        end block lpt
        wt_lpt%time=wt_lpt%time+parallel_time()-wt_lpt%time_in
+       
        ! Remember old scalar
        do ii=1,nscalar
           sc(ii)%rhoold=sc(ii)%rho
