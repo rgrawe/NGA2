@@ -262,9 +262,6 @@ contains
 
     ! Initialize our velocity field
     initialize_velocity: block
-      use lowmach_class, only: bcond
-      type(bcond), pointer :: mybc
-      integer :: n,i,j,k
       ! Zero initial field
       fs%U=0.0_WP; fs%V=0.0_WP; fs%W=0.0_WP
       ! Set density from particle volume fraction and store initial density

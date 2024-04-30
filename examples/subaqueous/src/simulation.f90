@@ -234,7 +234,7 @@ module simulation
          use random, only: random_uniform
          use mathtools, only: Pi
          real(WP) :: dp
-         integer :: i,j,np,ierr
+         integer :: i,j,np
          logical :: overlap
          character(len=str_medium) :: timestamp
          ! Create solver

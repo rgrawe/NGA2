@@ -5,6 +5,7 @@ module simulation
    use fft2d_class,       only: fft2d
    use ddadi_class,       only: ddadi
    use incomp_class,      only: incomp
+   use sgsmodel_class,    only: sgsmodel
    use timetracker_class, only: timetracker
    use ensight_class,     only: ensight
    use event_class,       only: event
@@ -17,6 +18,7 @@ module simulation
    type(timetracker), public :: time
    type(fft2d),       public :: ps
    type(ddadi),       public :: vs
+   type(sgsmodel),    public :: sgs
 
    !> Ensight postprocessing
    type(ensight) :: ens_out
@@ -31,75 +33,24 @@ module simulation
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
    real(WP), dimension(:,:,:,:), allocatable :: SR
+   real(WP), dimension(:,:,:,:,:), allocatable :: gradU
 
    !> Fluid viscosity
    real(WP) :: visc
 
    !> Channel forcing
-   real(WP) :: Ubulk,Wbulk
+   real(WP) :: Ubulk
    real(WP) :: meanU,meanW
 
-   !> Event for post-processing
-   type(event) :: ppevt
-
-contains
-
-
-   !> Specialized subroutine that outputs the velocity distribution
-   subroutine postproc_vel()
-      use string,    only: str_medium
-      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM
-      use parallel,  only: MPI_REAL_WP
-      implicit none
-      integer :: iunit,ierr,i,j,k
-      real(WP), dimension(:), allocatable :: Uavg,Uavg_,vol,vol_
-      character(len=str_medium) :: filename,timestamp
-      ! Allocate vertical line storage
-      allocate(Uavg (fs%cfg%jmin:fs%cfg%jmax)); Uavg =0.0_WP
-      allocate(Uavg_(fs%cfg%jmin:fs%cfg%jmax)); Uavg_=0.0_WP
-      allocate(vol_ (fs%cfg%jmin:fs%cfg%jmax)); vol_ =0.0_WP
-      allocate(vol  (fs%cfg%jmin:fs%cfg%jmax)); vol  =0.0_WP
-      ! Integrate all data over x and z
-      do k=fs%cfg%kmin_,fs%cfg%kmax_
-         do j=fs%cfg%jmin_,fs%cfg%jmax_
-            do i=fs%cfg%imin_,fs%cfg%imax_
-               vol_(j) = vol_(j)+fs%cfg%vol(i,j,k)
-               Uavg_(j)=Uavg_(j)+fs%cfg%vol(i,j,k)*fs%U(i,j,k)
-            end do
-         end do
-      end do
-      ! All-reduce the data
-      call MPI_ALLREDUCE( vol_, vol,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
-      call MPI_ALLREDUCE(Uavg_,Uavg,fs%cfg%ny,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
-      do j=fs%cfg%jmin,fs%cfg%jmax
-         if (vol(j).gt.0.0_WP) then
-            Uavg(j)=Uavg(j)/vol(j)
-         else
-            Uavg(j)=0.0_WP
-         end if
-      end do
-      ! If root, print it out
-      if (fs%cfg%amRoot) then
-         filename='Uavg_'
-         write(timestamp,'(es12.5)') time%t
-         open(newunit=iunit,file=trim(adjustl(filename))//trim(adjustl(timestamp)),form='formatted',status='replace',access='stream',iostat=ierr)
-         write(iunit,'(a12,3x,a12)') 'Height','Uavg'
-         do j=fs%cfg%jmin,fs%cfg%jmax
-            write(iunit,'(es12.5,3x,es12.5)') fs%cfg%ym(j),Uavg(j)
-         end do
-         close(iunit)
-      end if
-      ! Deallocate work arrays
-      deallocate(Uavg,Uavg_,vol,vol_)
-    end subroutine postproc_vel
+ contains
 
 
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
       implicit none
-
-
+      
+      
       ! Allocate work arrays
       allocate_work_arrays: block
          allocate(resU(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
@@ -109,7 +60,9 @@ contains
          allocate(Vi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Wi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(SR(6,cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(gradU(1:3,1:3,cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))   
       end block allocate_work_arrays
+
 
 
       ! Initialize time tracker with 2 subiterations
@@ -126,36 +79,57 @@ contains
       create_and_initialize_flow_solver: block
          use mathtools, only: twoPi
          use random,    only: random_uniform
-         integer :: i,j,k
-         real(WP) :: amp,vel
+         use mpi_f08,  only: MPI_SUM,MPI_MAX,MPI_ALLREDUCE
+         use parallel, only: MPI_REAL_WP
+         integer :: i,j,k,ierr
+         real(WP) :: amp,vel,geo_fac,my_Ly,Ly
          ! Create flow solver
          fs=incomp(cfg=cfg,name='NS solver')
          ! Assign constant viscosity
          call param_read('Dynamic viscosity',visc); fs%visc=visc
          ! Assign constant density
          call param_read('Density',fs%rho)
-         ! Configure pressure solver
+        ! Configure pressure solver
          ps=fft2d(cfg=cfg,name='Pressure',nst=7)
          ! Configure implicit velocity solver
          vs=ddadi(cfg=cfg,name='Velocity',nst=7)
          ! Setup the solver
          call fs%setup(pressure_solver=ps,implicit_solver=vs)
          ! Initialize velocity based on specified bulk
-         call param_read('Ubulk',Ubulk)
-         call param_read('Wbulk',Wbulk)
+         call param_read('Uh',Ubulk)
+         ! Rescale bulk velocity to enforce correct mean velocity at x=0
+         my_Ly=0.0_WP
+         i=fs%cfg%imin; k=fs%cfg%kmin
+         if (fs%cfg%imin_.le.i.and.fs%cfg%imax_.ge.i.and.&
+              fs%cfg%kmin_.le.k.and.fs%cfg%kmax_.ge.k) then
+            do j=fs%cfg%jmin_,fs%cfg%jmax_
+               my_Ly=my_Ly+fs%cfg%dy(j)*fs%cfg%VF(i,j,k)
+            end do
+         end if
+         call MPI_ALLREDUCE(my_Ly,Ly,1,MPI_REAL_WP,MPI_SUM,fs%cfg%ycomm,ierr)
+         call MPI_ALLREDUCE(Ly,my_Ly,1,MPI_REAL_WP,MPI_MAX,fs%cfg%comm,ierr); Ly=my_Ly
+         geo_fac=Ly*fs%cfg%xL*fs%cfg%zL/fs%cfg%fluid_vol
+         Ubulk=Ubulk*geo_fac
          fs%U=0.0_WP; fs%V=0.0_WP; fs%W=0.0_WP
          where (fs%umask.eq.0) fs%U=Ubulk
-         where (fs%wmask.eq.0) fs%W=Wbulk
          meanU=Ubulk
-         meanW=Wbulk
+         meanW=0.0_WP
          ! To facilitate transition
          call param_read('Perturbation',amp)
-         vel=sqrt(Ubulk**2+Wbulk**2)
+         vel=sqrt(Ubulk**2)
          do k=fs%cfg%kmino_,fs%cfg%kmaxo_
             do j=fs%cfg%jmino_,fs%cfg%jmaxo_
                do i=fs%cfg%imino_,fs%cfg%imaxo_
                   if (fs%umask(i,j,k).eq.0) fs%U(i,j,k)=fs%U(i,j,k)+amp*vel*cos(8.0_WP*twoPi*fs%cfg%zm(k)/fs%cfg%zL)
                   if (fs%wmask(i,j,k).eq.0) fs%W(i,j,k)=fs%W(i,j,k)+amp*vel*cos(8.0_WP*twoPi*fs%cfg%xm(i)/fs%cfg%xL)
+               end do
+            end do
+         end do
+         do k=fs%cfg%kmino_,fs%cfg%kmaxo_
+            do j=fs%cfg%jmino_,fs%cfg%jmaxo_
+               do i=fs%cfg%imino_,fs%cfg%imaxo_
+                  if (fs%umask(i,j,k).eq.0) fs%U(i,j,k)=fs%U(i,j,k)+random_uniform(lo=-0.5_WP*amp,hi=0.5_WP*amp)*fs%U(i,j,k)
+                  if (fs%wmask(i,j,k).eq.0) fs%W(i,j,k)=fs%W(i,j,k)+random_uniform(lo=-0.5_WP*amp,hi=0.5_WP*amp)*fs%W(i,j,k)
                end do
             end do
          end do
@@ -168,6 +142,12 @@ contains
       end block create_and_initialize_flow_solver
 
 
+      ! Create an LES model
+      create_sgs: block
+        sgs=sgsmodel(cfg=fs%cfg,umask=fs%umask,vmask=fs%vmask,wmask=fs%wmask)
+      end block create_sgs
+
+
       ! Add Ensight output
       create_ensight: block
          ! Create Ensight output from cfg
@@ -176,8 +156,11 @@ contains
          ens_evt=event(time=time,name='Ensight output')
          call param_read('Ensight output period',ens_evt%tper)
          ! Add variables to output
+         call ens_out%add_scalar('levelset',cfg%Gib)
          call ens_out%add_vector('velocity',Ui,Vi,Wi)
+         call ens_out%add_scalar('pressure',fs%P)
          call ens_out%add_scalar('viscosity',fs%visc)
+         call ens_out%add_scalar('visc_sgs',sgs%visc)
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
@@ -223,16 +206,6 @@ contains
       end block create_monitor
 
 
-      ! Create a specialized post-processing file
-      create_postproc: block
-         ! Create event for data postprocessing
-         ppevt=event(time=time,name='Postproc output')
-         call param_read('Postproc output period',ppevt%tper)
-         ! Perform the output
-         if (ppevt%occurs()) call postproc_vel()
-      end block create_postproc
-
-
    end subroutine simulation_init
 
 
@@ -253,8 +226,18 @@ contains
          fs%Vold=fs%V
          fs%Wold=fs%W
 
-         ! Apply time-varying Dirichlet conditions
-         ! This is where time-dpt Dirichlet would be enforced
+         ! Turbulence modeling
+         sgs_modeling: block
+           use sgsmodel_class, only: dynamic_smag,vreman
+           resU=fs%rho
+           call fs%get_gradu(gradU)
+           call fs%interp_vel(Ui,Vi,Wi)
+           call fs%get_strainrate(SR)
+           call sgs%get_visc(type=dynamic_smag,dt=time%dtold,rho=resU,gradu=gradU,Ui=Ui,Vi=Vi,Wi=Wi,SR=SR)
+           !sgs%visc=sgs%visc*fs%cfg%vf
+           where (cfg%Gib.lt.0.0_WP) sgs%visc=0.0_WP
+           fs%visc=visc+sgs%visc
+         end block sgs_modeling
 
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)
@@ -277,19 +260,18 @@ contains
                use mpi_f08,  only: MPI_SUM,MPI_ALLREDUCE
                use parallel, only: MPI_REAL_WP
                integer :: i,j,k,ierr
-               real(WP) :: myU,myUvol,myW,myWvol,Uvol,Wvol
+               real(WP) :: myU,myUvol,myW,myWvol,Uvol,Wvol,VFx,VFz
                myU=0.0_WP; myUvol=0.0_WP; myW=0.0_WP; myWvol=0.0_WP
                do k=fs%cfg%kmin_,fs%cfg%kmax_
                   do j=fs%cfg%jmin_,fs%cfg%jmax_
                      do i=fs%cfg%imin_,fs%cfg%imax_
-                        if (fs%umask(i,j,k).eq.0) then
-                           myU   =myU   +fs%cfg%dxm(i)*fs%cfg%dy(j)*fs%cfg%dz(k)*(2.0_WP*fs%U(i,j,k)-fs%Uold(i,j,k))
-                           myUvol=myUvol+fs%cfg%dxm(i)*fs%cfg%dy(j)*fs%cfg%dz(k)
-                        end if
-                        if (fs%wmask(i,j,k).eq.0) then
-                           myW   =myW   +fs%cfg%dx(i)*fs%cfg%dy(j)*fs%cfg%dzm(k)*(2.0_WP*fs%W(i,j,k)-fs%Wold(i,j,k))
-                           myWvol=myWvol+fs%cfg%dx(i)*fs%cfg%dy(j)*fs%cfg%dzm(k)
-                        end if
+                        VFx=sum(fs%itpr_x(:,i,j,k)*cfg%VF(i-1:i,j,k))
+                        if (VFx.le.0.5_WP) cycle
+                        myU   =myU   +fs%cfg%dxm(i)*fs%cfg%dy(j)*fs%cfg%dz(k)*VFx*(2.0_WP*fs%U(i,j,k)-fs%Uold(i,j,k))
+                        myUvol=myUvol+fs%cfg%dxm(i)*fs%cfg%dy(j)*fs%cfg%dz(k)*VFx
+                        VFz=sum(fs%itpr_z(:,i,j,k)*cfg%VF(i,j,k-1:k))
+                        myW   =myW   +fs%cfg%dx(i)*fs%cfg%dy(j)*fs%cfg%dzm(k)*VFz*(2.0_WP*fs%W(i,j,k)-fs%Wold(i,j,k))
+                        myWvol=myWvol+fs%cfg%dx(i)*fs%cfg%dy(j)*fs%cfg%dzm(k)*VFz
                      end do
                   end do
                end do
@@ -298,7 +280,7 @@ contains
                where (fs%umask.eq.0) resU=resU+fs%rho*(Ubulk-meanU)
                call MPI_ALLREDUCE(myWvol,Wvol ,1,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr)
                call MPI_ALLREDUCE(myW   ,meanW,1,MPI_REAL_WP,MPI_SUM,fs%cfg%comm,ierr); meanW=meanW/Wvol
-               where (fs%wmask.eq.0) resW=resW+fs%rho*(Wbulk-meanW)
+               where (fs%wmask.eq.0) resW=resW-fs%rho*meanW
             end block forcing
 
             ! Form implicit residuals
@@ -308,6 +290,27 @@ contains
             fs%U=2.0_WP*fs%U-fs%Uold+resU
             fs%V=2.0_WP*fs%V-fs%Vold+resV
             fs%W=2.0_WP*fs%W-fs%Wold+resW
+
+            ! Apply IB forcing to enforce BC at the pipe walls
+            ibforcing: block
+              integer :: i,j,k
+              real(WP) :: VFx,VFy,VFz
+              do k=fs%cfg%kmin_,fs%cfg%kmax_
+                 do j=fs%cfg%jmin_,fs%cfg%jmax_
+                    do i=fs%cfg%imin_,fs%cfg%imax_
+                       VFx=sum(fs%itpr_x(:,i,j,k)*cfg%VF(i-1:i,j,k))
+                       VFy=sum(fs%itpr_y(:,i,j,k)*cfg%VF(i,j-1:j,k))
+                       VFz=sum(fs%itpr_z(:,i,j,k)*cfg%VF(i,j,k-1:k))
+                       fs%U(i,j,k)=VFx*fs%U(i,j,k)
+                       fs%V(i,j,k)=VFy*fs%V(i,j,k)
+                       fs%W(i,j,k)=VFz*fs%W(i,j,k)
+                    end do
+                 end do
+              end do
+              call fs%cfg%sync(fs%U)
+              call fs%cfg%sync(fs%V)
+              call fs%cfg%sync(fs%W)
+            end block ibforcing
 
             ! Apply other boundary conditions on the resulting fields
             call fs%apply_bcond(time%t,time%dt)
@@ -345,9 +348,6 @@ contains
          call cflfile%write()
          call forcefile%write()
 
-         ! Specialized post-processing
-         if (ppevt%occurs()) call postproc_vel()
-
       end do
 
    end subroutine simulation_run
@@ -364,7 +364,7 @@ contains
       ! timetracker
 
       ! Deallocate work arrays
-      deallocate(resU,resV,resW,Ui,Vi,Wi,SR)
+      deallocate(resU,resV,resW,Ui,Vi,Wi,SR,gradU)
 
    end subroutine simulation_final
 
