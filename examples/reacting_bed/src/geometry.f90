@@ -20,7 +20,6 @@ contains
       implicit none
       type(sgrid) :: grid
       
-      
       ! Create a grid from input params
       create_grid: block
          use sgrid_class, only: cartesian

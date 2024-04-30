@@ -831,7 +831,7 @@ contains
     end block interpolate
 
     ! Particle Reynolds number
-    Re=frho*norm2(p%vel-fvel)*p%d/fvisc+epsilon(1.0_WP)
+    Re=fVF*frho*norm2(p%vel-fvel)*p%d/fvisc+epsilon(1.0_WP)
 
     ! Effective particle density
     rhop=this%rho+6.0_WP*p%mc/(pi*p%d**3)
@@ -1038,7 +1038,7 @@ contains
 
        ! Compute particle slip and Reynolds number
        slip=this%p(i)%vel-fvel
-       Rep=frho*norm2(slip)*this%p(i)%d/fvisc
+       Rep=(1.0_WP-pVF)*frho*norm2(slip)*this%p(i)%d/fvisc
 
        ! Transfer to the grid
        Vp=Pi/6.0_WP*this%p(i)%d**3
@@ -1184,7 +1184,7 @@ contains
                 alpha_par=diff(i,j,k)*(2.0_WP*Rep*(Rep+1.4_WP)*Pr**2*exp(-0.002089_WP*Rep)/(3.0_WP*Pi*Nu)*&
                         (fVF*(-5.11_WP*pVF+10.1_WP*pVF**2-10.85_WP*pVF**3)+1-exp(-10.96_WP*pVF))/&
                         ((1.17_WP*pVF-0.2021_WP*pVF**(1.0_WP/2.0_WP)+0.08568_WP*pVF**(1.0_WP/4.0_WP))*fVF**2*(1.0_WP-1.6_WP*pVF*fVF-3.0_WP*pVF*fVF**4*exp(-Rep**0.4_WP*pVF))))
-                this%diff_pt(i,j,k)=alpha_par
+                this%diff_pt(i,j,k)=alpha_par/rho(i,j,k)
                 !  Assume isotropic in 2D
                 if (this%cfg%nx.eq.1) then
                    alphaij = 0.0_WP

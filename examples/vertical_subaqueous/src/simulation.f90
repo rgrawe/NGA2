@@ -265,7 +265,7 @@ module simulation
                   overlap=.true.
                   do while(overlap)
                      lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin)+0.5_WP*dp,lp%cfg%x(lp%cfg%imax+1)-0.5_WP*dp),&
-                          &       random_uniform(lp%cfg%y(lp%cfg%jmin)+0.5_WP*dp,lp%cfg%y(lp%cfg%jmin)+0.75_WP*lp%cfg%yL),&
+                          &       random_uniform(lp%cfg%y(lp%cfg%jmin)+0.5_WP*dp,lp%cfg%y(lp%cfg%jmin)+lp%cfg%yL),&
                           &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
                      if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=lp%cfg%zm(lp%cfg%kmin_)
                      overlap=.false.

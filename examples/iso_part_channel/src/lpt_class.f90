@@ -89,6 +89,9 @@ module lpt_class
      real(WP) :: Vmin,Vmax,Vmean,Vvar                    !< V velocity info
      real(WP) :: Wmin,Wmax,Wmean,Wvar                    !< W velocity info
      integer  :: np_new,np_out                           !< Number of new and removed particles
+     real(WP) :: Tp
+     integer  :: Tp_ind
+     logical  :: Tp_off
 
      ! Particle volume fraction
      real(WP), dimension(:,:,:), allocatable :: VF       !< Particle volume fraction, cell-centered
@@ -331,7 +334,7 @@ contains
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: srcSC
     real(WP), intent(inout) :: fCp
     integer :: i,j,k,ierr
-    real(WP) :: mydt,dt_done,dTdt,dTemp,mass
+    real(WP) :: mydt,dt_done,dTdt,dTemp,mass,Tp
     real(WP), dimension(3) :: acc,dmom
     type(part) :: myp,pold
     real(WP) :: fvisc,fdiff,frho,pVF,fVF,fT
@@ -346,6 +349,16 @@ contains
     ! Zero out number of particles removed
     this%np_out=0
     ! Advance the equations
+    do i=1,this%np_
+       ! Avoid particles with id=0
+       if (this%cfg%amRoot.and.i.eq.this%Tp_ind) then
+          this%Tp=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=T,bc='n')
+          pVF=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%VF,bc='n')
+          if (this%Tp_off) this%p(i)%id=0
+          !print *, this%p(i)%pos
+       end if
+    end do
+    
     do i=1,this%np_
        ! Avoid particles with id=0
        if (this%p(i)%id.eq.0) cycle
@@ -607,7 +620,7 @@ contains
 
        ! Compute particle slip and Reynolds number
        slip=this%p(i)%vel-fvel
-       Rep=(1-pVF)*frho*norm2(slip)*this%p(i)%d/fvisc
+       Rep=(1.0_WP-pVF)*frho*norm2(slip)*this%p(i)%d/fvisc
 
        ! Transfer to the grid
        Vp=Pi/6.0_WP*this%p(i)%d**3

@@ -284,7 +284,7 @@ contains
          ! Get number of particles
          Lpart = (Volp/VFavg)**(1.0_WP/3.0_WP)
          npx=int(Hbed/Lpart)
-         npy = int(cfg%yL/Lpart)
+         npy = int(cfg%yL/Lpart)     
          Lparty = cfg%yL/real(npy,WP)
          npz = int(cfg%zL/Lpart)
          Lpartz = cfg%zL/real(npz,WP)
@@ -326,7 +326,6 @@ contains
          end do
       end if
       call lp%sync()
-
       ! Get initial particle volume fraction
       call lp%update_VF()
       ! Set collision timescale
@@ -602,11 +601,11 @@ contains
               &          stress_x=resU,stress_y=resV,stress_z=resW,T=sc(ind_T)%SCold,YCO2=sc(ind_CO2)%SCold,&
               &          srcU=srcUlp,srcV=srcVlp,srcW=srcWlp,srcSC=srcSClp,fCp=fCp)
          ! Compute PTKE and store source terms
-         ! call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC(ind_T)%SCold,fCp=fCp,&
-         !     &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%sc,srcU=resU,srcV=resV,srcW=resW,srcT=tmp1,srcY=tmp2)
-         ! srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW
-         ! srcSClp(:,:,:,ind_T)=srcSClp(:,:,:,ind_T)+tmp1
-         ! srcSClp(:,:,:,ind_CO2)=srcSClp(:,:,:,ind_CO2)+tmp2
+         call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC(ind_T)%SCold,fCp=fCp,&
+             &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%sc,srcU=resU,srcV=resV,srcW=resW,srcT=tmp1,srcY=tmp2)
+         srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW
+         srcSClp(:,:,:,ind_T)=srcSClp(:,:,:,ind_T)+tmp1
+         srcSClp(:,:,:,ind_CO2)=srcSClp(:,:,:,ind_CO2)+tmp2
        end block lpt
        wt_lpt%time=wt_lpt%time+parallel_time()-wt_lpt%time_in
        ! Remember old scalar
@@ -670,8 +669,9 @@ contains
                    sc(ii)%SC(i,j,k)=SCin(ii)
                 end do
               end block scalar_bcond
-             call sc(ii)%rho_multiply()
+              call sc(ii)%rho_multiply()
           end do
+
 
           ! Update dependent variables
           !resSC=sc(1)%rho

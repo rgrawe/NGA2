@@ -28,8 +28,8 @@ Inlet velocity : 0.25
 # Scalars
 Initial T: 300
 Initial CO2 : 0
-Inlet T : 350
-Inlet CO2 : 0
+Inlet T : 300
+Inlet CO2 : 0.1
 Min T : 250
 Max T : 400
 Min CO2 : -.1
@@ -38,7 +38,7 @@ Max CO2 : 1.1
 # Particle parameters
 Fixed particles : .false.
 Bed height : 0.032
-Particle volume fraction : 0.4
+Particle volume fraction : 0.0
 Particle diameter : 500e-6
 Particle density :  861.4
 Particle temperature : 300

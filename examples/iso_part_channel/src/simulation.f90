@@ -160,8 +160,12 @@ contains
     initialize_lpt: block
       use random, only: random_uniform
       use mathtools, only: Pi
-      real(WP) :: Lpart,Lparty,Lpartz,Volp,Vbox
-      integer :: i,j,k,ix,iy,iz,np,ii,jj,kk,nn,ip,jp,kp,offset,ierr
+      real(WP) :: Lpart,Lparty,Lpartz,Volp,Vbox,Hbed
+      integer :: i,j,k,ix,iy,iz,np,npx,npy,npz,nn,ii,jj,kk,ip,jp,kp
+      logical :: lattice
+      integer, dimension(:,:,:), allocatable :: npic      !< Number of particle in cell
+      integer, dimension(:,:,:,:), allocatable :: ipic    !< Index of particle in cell
+      logical :: overlap
       
       ! Create solver
       lp=lpt(cfg=cfg,name='LPT')
@@ -175,31 +179,109 @@ contains
       call param_read('Particle heat capacity',lp%pCp)
       ! Set filter width to 3.5*dx
       call param_read('Filter width',lp%filter_width)
-      ! Set volume fraction
+      ! Set height and volume fraction of the particle bed
+      call param_read('Box height',Hbed)
       call param_read('Particle volume fraction',VFavg)
+      !call param_read('Number of particles',np)
       ! Euler-Euler or Euler Lagrange
       call param_read('EL simulation', lagrange,default=.true.)
+      ! Select particle to turn monitor
+      call param_read('Tp index',lp%Tp_ind)
+      ! Select whether to turn off particle
+      call param_read('Tp off',lp%Tp_off,default=.false.)
+      ! Select lattice or random configuration
+      call param_read('Lattice configuration',lattice,default=.true.)
 
       if (lagrange) then
          ! Root process initializes particles
-         if (lp%cfg%amRoot) then
-            ! Particle volume
+         if (lattice) then
+            if (lp%cfg%amRoot) then
+               ! Particle volume
+               Volp = Pi/6.0_WP*dp**3
+               ! Get number of particles
+               Lpart = (Volp/VFavg)**(1.0_WP/3.0_WP)
+               npx=int(Hbed/Lpart)
+               npy = int(cfg%yL/Lpart)     
+               Lparty = cfg%yL/real(npy,WP)
+               npz = int(cfg%zL/Lpart)
+               Lpartz = cfg%zL/real(npz,WP)
+               np = npx*npy*npz
+               call lp%resize(np)
+               VFavg=np*Volp/(Hbed*cfg%yL*cfg%zL)
+               ! Distribute particles
+               do i=1,np
+                  ! Give position
+                  ix = (i-1)/(npy*npz)
+                  iy = (i-1-npy*npz*ix)/npz
+                  iz = i-1-npy*npz*ix-npz*iy
+                  lp%p(i)%pos(1) = lp%cfg%x(lp%cfg%imin)+(real(ix,WP)+0.5_WP)*Lpart+0.5_WP
+                  lp%p(i)%pos(2) = lp%cfg%y(lp%cfg%jmin)+(real(iy,WP)+0.5_WP)*Lparty+0.5_WP
+                  lp%p(i)%pos(3) = lp%cfg%z(lp%cfg%kmin)+(real(iz,WP)+0.5_WP)*Lpartz+0.5_WP
+                  ! Locate the particle on the mesh
+                  lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+                  ! Set the diameter
+                  lp%p(i)%d=dp
+                  ! Activate the particle
+                  lp%p(i)%flag=0
+                  ! Set the temperature
+                  lp%p(i)%T=Tp
+                  ! Give zero velocity
+                  lp%p(i)%vel=0.0_WP
+                  ! Give zero dt
+                  lp%p(i)%dt=0.0_WP
+                  ! Set ID
+                  if (lp%p(i)%pos(1).le.x0) then
+                     lp%p(i)%id=0
+                  else
+                     lp%p(i)%id=-1
+                  end if              
+               end do
+            end if
+         else
             Volp = Pi/6.0_WP*dp**3
-            ! Get number of particles
-            Vbox=cfg%xL*cfg%yL*cfg%zL
-            np = 6258!int(VFavg*Vbox/(Volp))
+            !Vbox=Hbed*cfg%yL*cfg%zL
+            Vbox=0.0_WP
+            do k=lp%cfg%kmin_,lp%cfg%kmax_
+               do j=lp%cfg%jmin_,lp%cfg%jmax_
+                  do i=lp%cfg%imin_,fs%cfg%imax_
+                     Vbox=Vbox+lp%cfg%vol(i,j,k)*lp%cfg%VF(i,j,k)
+                  end do
+               end do
+            end do
+            np = int(VFavg*Vbox/Volp)
             call lp%resize(np)
-            if(VFavg.gt.0.3_WP) open(unit = 1, file = "PartConfig40") 
-            if(VFavg.lt.0.3_WP) open(unit = 1, file = "PartConfig10")
-            ! Distribute particles
+            ! Allocate particle in cell arrays
+            allocate(npic(     lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_)); npic=0
+            allocate(ipic(1:40,lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_)); ipic=0
+            VFavg=real(np,WP)*Volp/Vbox
             do i=1,np
                ! Set the diameter
                lp%p(i)%d=dp
-               ! Read in position
-               read(1,*) lp%p(i)%pos(1),lp%p(i)%pos(2),lp%p(i)%pos(3)
-               lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+               ! Give position (avoid overlap)
+               overlap=.true.
+               do while (overlap)
+                  lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin_),lp%cfg%x(lp%cfg%imax_+1)),&
+                       &       random_uniform(lp%cfg%y(lp%cfg%jmin_),lp%cfg%y(lp%cfg%jmax_+1)-dp),&
+                       &       random_uniform(lp%cfg%z(lp%cfg%kmin_),lp%cfg%z(lp%cfg%kmax_+1)-dp)]
+                  if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
+                  lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+                  overlap=.false.
+                  do kk=lp%p(i)%ind(3)-1,lp%p(i)%ind(3)+1
+                     do jj=lp%p(i)%ind(2)-1,lp%p(i)%ind(2)+1
+                        do ii=lp%p(i)%ind(1)-1,lp%p(i)%ind(1)+1
+                           do nn=1,npic(ii,jj,kk)
+                              j=ipic(nn,ii,jj,kk)
+                              if (sqrt(sum((lp%p(i)%pos-lp%p(j)%pos)**2)).lt.0.5_WP*(lp%p(i)%d+lp%p(j)%d)) overlap=.true.
+                           end do
+                        end do
+                     end do
+                  end do
+               end do
                ! Activate the particle
                lp%p(i)%flag=0
+               ip=lp%p(i)%ind(1); jp=lp%p(i)%ind(2); kp=lp%p(i)%ind(3)
+               npic(ip,jp,kp)=npic(ip,jp,kp)+1
+               ipic(npic(ip,jp,kp),ip,jp,kp)=i
                ! Set the temperature
                lp%p(i)%T=Tp
                ! Give zero velocity
@@ -213,17 +295,16 @@ contains
                   lp%p(i)%id=-1
                end if
             end do
-            close(1)
          end if
          call lp%sync()
-
          ! Get initial particle volume fraction
          call lp%update_VF()       
          if (lp%cfg%amRoot) then
             print*,"===== Particle Setup Description ====="
             print*,'Euler-Lagrange'
-            print*,'Number of particles', np
+            print*,'Number of particles', lp%np
             print*,'Mean volume fraction',VFavg
+            print *, 'Location of particle being tracked',lp%p(lp%Tp_ind)%pos
          end if
       else
          np=0
@@ -231,12 +312,11 @@ contains
          if (lp%cfg%amRoot) then
             print*,"===== Particle Setup Description ====="
             print*,'Euler-Euler'
-            print*,'Number of particles', np
+            print*,'Number of particles', lp%np
             print*,'Mean volume fraction',VFavg
          end if
       end if
     end block initialize_lpt
-
 
 
     ! Create partmesh object for Lagrangian particle output
@@ -387,6 +467,7 @@ contains
       call lptfile%add_column(lp%VFmean,'VFp mean')
       call lptfile%add_column(lp%VFmax,'VFp max')
       call lptfile%add_column(lp%np,'Particle number')
+      call lptfile%add_column(lp%Tp,'Particle Tp')
       call lptfile%write()
     end block create_monitor
 
@@ -402,7 +483,6 @@ contains
 
     ! Perform time integration
     do while (.not.time%done())
-
        ! Increment time
        call lp%get_cfl(time%dt,cflc=time%cfl)
        call fs%get_cfl(time%dt,cfl); time%cfl=max(time%cfl,cfl)
@@ -463,7 +543,6 @@ contains
                      fdiff=sc%diff(i,j,k)
                      Rep=frho*fVF*norm2(vel)*dp/fvisc
                      
-
                      ! Compute Nu
                      Pr=fvisc/fdiff
                      Nu=(-0.46_WP+1.77_WP*fVF+0.69_WP*fVF**2)/fVf**3+(1.37_WP-2.4_WP*fVf+1.2_WP*fVf**2)*Rep**(0.7_WP)*Pr**(1.0_WP/3.0_WP)
