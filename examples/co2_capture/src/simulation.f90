@@ -128,7 +128,7 @@ contains
     integer, intent(in) :: i,j,k
     logical :: isIn
     isIn=.false.
-    if (i.eq.pg%imin.and.j.ge.pg%jmin.and.j.le.pg%jmax.and.k.ge.pg%kmin.and.k.le.pg%kmax) isIn=.true.
+    if (i.eq.pg%imin) isIn=.true.
   end function left_of_domain
 
   !> Function that localizes the right (x+) of the domain
@@ -152,9 +152,7 @@ contains
     real(WP) :: radius
     logical :: isIn
     isIn=.false.
-    !if (i.eq.pg%imin-1) isIn=.true.
-    radius=norm2([pg%ym(j),pg%zm(k)]-[0.0_WP,0.0_WP])
-    if (radius.le.0.5_WP*D.and.i.eq.pg%imin) isIn=.true.
+    if (i.eq.pg%imin-1) isIn=.true.
   end function left_of_domain_sc
 
 
