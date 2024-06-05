@@ -513,7 +513,7 @@ contains
          str=trim(sc(ii)%name)//'int'
          call scfile%add_column(sc(ii)%SCint,trim(str))
       end do
-      call adsfile%write()
+      call scfile%write()
       ! Create adsorption monitor
       adsfile=monitor(fs%cfg%amRoot,'adsorption')
       call adsfile%add_column(time%n,'Timestep number')

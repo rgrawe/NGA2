@@ -38,7 +38,7 @@ Max CO2 : 1.1
 # Particle parameters
 Fixed particles : .false.
 Bed height : 0.032
-Particle volume fraction : 0.0
+Particle volume fraction : 0.2
 Particle diameter : 500e-6
 Particle density :  861.4
 Particle temperature : 300

@@ -2,42 +2,38 @@
 Partition :	4 1 1
 
 # Mesh definition
-Pipe diameter : 0.0064
-Pipe length   : 0.0384
-nx : 192
-ny : 32
-nz : 32
+Pipe diameter : 0.039
+Pipe length   : 0.2574
+nx : 105
+ny : 16
+nz : 16
 
 # Fluid properties
-Dynamic viscosity : 1.8e-5
-Thermal diffusivity :  0.00002571428
-CO2 diffusivity : 0.00002571428
-Heat capacity : 1000
-Pressure : 101325
-Inlet velocity : 0.1
+Pressure : 1e5
+Inlet velocity : 0.020927672
+x0 : 0.0117
+Inert gas : Helium
 
 # Scalars
-Initial T: 300
+Initial T: 295
 Initial CO2 : 0.0
-Inlet T : 300
-Inlet CO2 : 0.1
-Min T : 250
-Max T : 400
-Min CO2 : -.1
-Max CO2 : 1.1
+Inlet T : 295
+Inlet CO2 : 1.0
 
 # Particle parameters
-Particle volume fraction : 0.3
-Particle diameter : 200e-6
-Particle density :  861.4
-Particle temperature : 300
-Particle heat capacity : 1580
-Filter width : 600e-6
+Particle volume fraction : 0.2
+Particle diameter : 2.4e-3
+Particle density :  640
+Particle temperature : 295
+Particle heat capacity : 900
+Filter width : 8.4e-3
+
+Adsorption model : Z13X
 
 # Time integration
-Max timestep size :	1e-4
+Max timestep size :	10e-4
 Max cfl number:		0.9
-Max time : 		1000
+Max time : 		10
 
 # Ensight output
-Ensight output period : 10e-4
+Ensight output period : 10e-3

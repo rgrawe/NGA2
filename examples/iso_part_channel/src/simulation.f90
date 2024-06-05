@@ -554,9 +554,9 @@ contains
          end if
 
          ! Compute PTKE and store source terms
-         call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC%SCold,fCp=fCp,&
-             &           diff=sc%diff,srcU=resU,srcV=resV,srcW=resW,srcT=tmp,lagrange=lagrange)
-         srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW; srcSClp=srcSClp+tmp
+         !call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC%SCold,fCp=fCp,&
+         !    &           diff=sc%diff,srcU=resU,srcV=resV,srcW=resW,srcT=tmp,lagrange=lagrange)
+         !srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW; srcSClp=srcSClp+tmp
          
        end block lpt
 
