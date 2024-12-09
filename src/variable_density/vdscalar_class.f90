@@ -91,6 +91,7 @@ module vdscalar_class
       procedure :: init_metrics                             !< Initialize metrics
       procedure :: adjust_metrics                           !< Adjust metrics
       procedure :: get_drhoSCdt                             !< Calculate drhoSC/dt
+      procedure :: get_div_diff                             !< Calculate div of diffusive flux
       procedure :: get_max                                  !< Calculate maximum field values
       procedure :: get_int                                  !< Calculate integral field values
       procedure :: get_drhodt                               !< Calculate drhodt
@@ -578,7 +579,50 @@ contains
       deallocate(FX,FY,FZ)
       ! Sync residual
       call this%cfg%sync(drhoSCdt)
-   end subroutine get_drhoSCdt
+    end subroutine get_drhoSCdt
+
+
+    !> Calculate the divergence of diffusive flux
+   subroutine get_div_diff(this,divDiff)
+      implicit none
+      class(vdscalar), intent(inout) :: this
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: divDiff !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      integer :: i,j,k
+      real(WP), dimension(:,:,:), allocatable :: FX,FY,FZ
+       ! Zero out array
+      divDiff=0.0_WP
+      ! Allocate flux arrays
+      allocate(FX(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FY(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(FZ(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      ! Flux of rhoSC
+      do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               ! Fluxes on x-face
+               FX(i,j,k)=sum(this%itp_x(:,i,j,k)*this%diff(i-1:i,j,k))*sum(this%grdsc_x(:,i,j,k)*this%SC(i-1:i,j,k))
+               ! Fluxes on y-face
+               FY(i,j,k)=sum(this%itp_y(:,i,j,k)*this%diff(i,j-1:j,k))*sum(this%grdsc_y(:,i,j,k)*this%SC(i,j-1:j,k))
+               ! Fluxes on z-face
+               FZ(i,j,k)=sum(this%itp_z(:,i,j,k)*this%diff(i,j,k-1:k))*sum(this%grdsc_z(:,i,j,k)*this%SC(i,j,k-1:k))
+            end do
+         end do
+      end do
+      ! Take divergence
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               divDiff(i,j,k)=sum(this%divsc_x(:,i,j,k)*FX(i:i+1,j,k))+&
+               &              sum(this%divsc_y(:,i,j,k)*FY(i,j:j+1,k))+&
+               &              sum(this%divsc_z(:,i,j,k)*FZ(i,j,k:k+1))
+            end do
+         end do
+      end do
+      ! Deallocate flux arrays
+      deallocate(FX,FY,FZ)
+      ! Sync residual
+      call this%cfg%sync(divDiff)
+   end subroutine get_div_diff
    
    
    !> Calculate the time derivative of rho

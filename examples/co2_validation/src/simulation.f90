@@ -321,7 +321,7 @@ contains
                     &       random_uniform(lp%cfg%y(lp%cfg%jmin),lp%cfg%y(lp%cfg%jmax+1)),&
                     &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
                if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
-               if (sqrt(sum(lp%p(i)%pos(2:3)**2)).lt.0.5*D.and.(sqrt(sum(lp%p(i)%pos(2:3)**2))).gt.(0.0015_WP+dp/2)) remove=.false.
+               if (sqrt(sum(lp%p(i)%pos(2:3)**2)).lt.0.5*D) remove=.false.
             end do
             ! Give id (fixed)
             lp%p(i)%id=-1
@@ -331,6 +331,7 @@ contains
             lp%p(i)%T=Tp
             ! Give zero mass of adsorbed CO2
             lp%p(i)%Mc=0.0_WP
+            lp%p(i)%MacroCO2=0.0_WP
             ! Give zero velocity
             lp%p(i)%vel=0.0_WP
             ! Give zero collision force

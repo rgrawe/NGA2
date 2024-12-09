@@ -43,7 +43,7 @@ module simulation
   real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi,rhof,Tf
   real(WP), dimension(:,:,:), allocatable :: srcUlp,srcVlp,srcWlp,srcSClp
   real(WP), dimension(:,:,:), allocatable :: tmp
-  real(WP) :: rhoUin,rho,dp,VFavg,Tp,SCin,fCp
+  real(WP) :: rhoUin,rho,dp,VFavg,Tp,SCin,fCp,diff_mult
 
 contains
 
@@ -160,12 +160,16 @@ contains
     initialize_lpt: block
       use random, only: random_uniform
       use mathtools, only: Pi
+      use string, only: str_medium
       real(WP) :: Lpart,Lparty,Lpartz,Volp,Vbox,Hbed
       integer :: i,j,k,ix,iy,iz,np,npx,npy,npz,nn,ii,jj,kk,ip,jp,kp
-      logical :: lattice
+      logical :: lattice, preset, perturb
       integer, dimension(:,:,:), allocatable :: npic      !< Number of particle in cell
       integer, dimension(:,:,:,:), allocatable :: ipic    !< Index of particle in cell
       logical :: overlap
+      character(len=str_medium) :: part_config
+      integer :: n
+      integer, dimension(:), allocatable :: state
       
       ! Create solver
       lp=lpt(cfg=cfg,name='LPT')
@@ -173,7 +177,7 @@ contains
       call param_read('Particle density',lp%rho)
       ! Get particle diameter from the input
       call param_read('Particle diameter',dp)
-      ! Set particle temperature
+      ! Set particle temfperature
       call param_read('Particle temperature',Tp,default=298.15_WP)
       ! Get particle heat capacity from the input
       call param_read('Particle heat capacity',lp%pCp)
@@ -191,6 +195,14 @@ contains
       call param_read('Tp off',lp%Tp_off,default=.false.)
       ! Select lattice or random configuration
       call param_read('Lattice configuration',lattice,default=.true.)
+      call param_read('Preset configuration',preset,default=.true.)
+      call param_read('Perturb lattice',perturb,default=.false.)
+      write(part_config,'(f12.2)') VFavg*100.0_WP
+
+      call random_seed(size=n)
+      allocate(state(n))
+      state = 20180815
+      call random_seed( put=state )
 
       if (lagrange) then
          ! Root process initializes particles
@@ -200,7 +212,7 @@ contains
                Volp = Pi/6.0_WP*dp**3
                ! Get number of particles
                Lpart = (Volp/VFavg)**(1.0_WP/3.0_WP)
-               npx=int(Hbed/Lpart)
+               npx=int(cfg%xL/Lpart)
                npy = int(cfg%yL/Lpart)     
                Lparty = cfg%yL/real(npy,WP)
                npz = int(cfg%zL/Lpart)
@@ -217,6 +229,7 @@ contains
                   lp%p(i)%pos(1) = lp%cfg%x(lp%cfg%imin)+(real(ix,WP)+0.5_WP)*Lpart+0.5_WP
                   lp%p(i)%pos(2) = lp%cfg%y(lp%cfg%jmin)+(real(iy,WP)+0.5_WP)*Lparty+0.5_WP
                   lp%p(i)%pos(3) = lp%cfg%z(lp%cfg%kmin)+(real(iz,WP)+0.5_WP)*Lpartz+0.5_WP
+                  read(1,*) lp%p(i)%pos(1),lp%p(i)%pos(2),lp%p(i)%pos(3)
                   ! Locate the particle on the mesh
                   lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
                   ! Set the diameter
@@ -238,63 +251,57 @@ contains
                end do
             end if
          else
-            Volp = Pi/6.0_WP*dp**3
-            !Vbox=Hbed*cfg%yL*cfg%zL
-            Vbox=0.0_WP
-            do k=lp%cfg%kmin_,lp%cfg%kmax_
-               do j=lp%cfg%jmin_,lp%cfg%jmax_
-                  do i=lp%cfg%imin_,fs%cfg%imax_
-                     Vbox=Vbox+lp%cfg%vol(i,j,k)*lp%cfg%VF(i,j,k)
-                  end do
-               end do
-            end do
-            np = int(VFavg*Vbox/Volp)
-            call lp%resize(np)
-            ! Allocate particle in cell arrays
-            allocate(npic(     lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_)); npic=0
-            allocate(ipic(1:40,lp%cfg%imino_:lp%cfg%imaxo_,lp%cfg%jmino_:lp%cfg%jmaxo_,lp%cfg%kmino_:lp%cfg%kmaxo_)); ipic=0
-            VFavg=real(np,WP)*Volp/Vbox
-            do i=1,np
-               ! Set the diameter
-               lp%p(i)%d=dp
-               ! Give position (avoid overlap)
-               overlap=.true.
-               do while (overlap)
-                  lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin_),lp%cfg%x(lp%cfg%imax_+1)),&
-                       &       random_uniform(lp%cfg%y(lp%cfg%jmin_),lp%cfg%y(lp%cfg%jmax_+1)-dp),&
-                       &       random_uniform(lp%cfg%z(lp%cfg%kmin_),lp%cfg%z(lp%cfg%kmax_+1)-dp)]
-                  if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
-                  lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
-                  overlap=.false.
-                  do kk=lp%p(i)%ind(3)-1,lp%p(i)%ind(3)+1
-                     do jj=lp%p(i)%ind(2)-1,lp%p(i)%ind(2)+1
-                        do ii=lp%p(i)%ind(1)-1,lp%p(i)%ind(1)+1
-                           do nn=1,npic(ii,jj,kk)
-                              j=ipic(nn,ii,jj,kk)
-                              if (sqrt(sum((lp%p(i)%pos-lp%p(j)%pos)**2)).lt.0.5_WP*(lp%p(i)%d+lp%p(j)%d)) overlap=.true.
+            if (lp%cfg%amRoot) then
+               Volp = Pi/6.0_WP*dp**3
+               Vbox=cfg%xL*cfg%yL*cfg%zL
+               np = int(VFavg*Vbox/Volp)
+               call lp%resize(np)
+               ! Allocate particle in cell arrays
+               allocate(npic(     lp%cfg%imino:lp%cfg%imaxo,lp%cfg%jmino:lp%cfg%jmaxo,lp%cfg%kmino:lp%cfg%kmaxo)); npic=0
+               allocate(ipic(1:40,lp%cfg%imino:lp%cfg%imaxo,lp%cfg%jmino:lp%cfg%jmaxo,lp%cfg%kmino:lp%cfg%kmaxo)); ipic=0
+               VFavg=real(np,WP)*Volp/Vbox
+               do i=1,np
+                  ! Set the diameter
+                  lp%p(i)%d=dp
+                  ! Give position (avoid overlap)
+                  overlap=.true.
+                  do while (overlap)
+                     lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin),lp%cfg%x(lp%cfg%imax+1)),&
+                          &       random_uniform(lp%cfg%y(lp%cfg%jmin),lp%cfg%y(lp%cfg%jmax+1)),&
+                          &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
+                     if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
+                     lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+                     overlap=.false.
+                     do kk=lp%p(i)%ind(3)-1,lp%p(i)%ind(3)+1
+                        do jj=lp%p(i)%ind(2)-1,lp%p(i)%ind(2)+1
+                           do ii=lp%p(i)%ind(1)-1,lp%p(i)%ind(1)+1
+                              do nn=1,npic(ii,jj,kk)
+                                 j=ipic(nn,ii,jj,kk)
+                                 if (sqrt(sum((lp%p(i)%pos-lp%p(j)%pos)**2)).lt.0.5_WP*(lp%p(i)%d+lp%p(j)%d)) overlap=.true.
+                              end do
                            end do
                         end do
                      end do
                   end do
+                  ! Activate the particle
+                  lp%p(i)%flag=0
+                  ip=lp%p(i)%ind(1); jp=lp%p(i)%ind(2); kp=lp%p(i)%ind(3)
+                  npic(ip,jp,kp)=npic(ip,jp,kp)+1
+                  ipic(npic(ip,jp,kp),ip,jp,kp)=i
+                  ! Set the temperature
+                  lp%p(i)%T=Tp
+                  ! Give zero velocity
+                  lp%p(i)%vel=0.0_WP
+                  ! Give zero dt
+                  lp%p(i)%dt=0.0_WP
+                  ! Set ID
+                  if (lp%p(i)%pos(1).le.x0) then
+                     lp%p(i)%id=0
+                  else
+                     lp%p(i)%id=-1
+                  end if
                end do
-               ! Activate the particle
-               lp%p(i)%flag=0
-               ip=lp%p(i)%ind(1); jp=lp%p(i)%ind(2); kp=lp%p(i)%ind(3)
-               npic(ip,jp,kp)=npic(ip,jp,kp)+1
-               ipic(npic(ip,jp,kp),ip,jp,kp)=i
-               ! Set the temperature
-               lp%p(i)%T=Tp
-               ! Give zero velocity
-               lp%p(i)%vel=0.0_WP
-               ! Give zero dt
-               lp%p(i)%dt=0.0_WP
-               ! Set ID
-               if (lp%p(i)%pos(1).le.x0) then
-                  lp%p(i)%id=0
-               else
-                  lp%p(i)%id=-1
-               end if
-            end do
+            end if
          end if
          call lp%sync()
          ! Get initial particle volume fraction
@@ -316,6 +323,7 @@ contains
             print*,'Mean volume fraction',VFavg
          end if
       end if
+    call lp%write(filename='part_config'//trim(adjustl(part_config)))
     end block initialize_lpt
 
 
@@ -343,6 +351,7 @@ contains
       call param_read('Density',rho)
       call param_read('Initial T',Ti)
       call param_read('Inlet T',SCin)
+      call param_read('Diffusivity multiplier',diff_mult)
       ! Assign values
       sc%SC=Ti
       ! Initialize the scalars at the inlet
@@ -495,8 +504,9 @@ contains
          real(WP) :: fVF,pVF,Rep,frho,fvisc,fdiff,dt,Pr,Nu,theta
          real(WP), dimension(3) :: vel
 
-         ! Get fluid stress
+         ! Get fluid stress and thermal diffusive flux
          call fs%get_div_stress(resU,resV,resW)
+         call sc%get_div_diff(resSC)
          ! Filter fluid quantities
          fs%Uold=fs%U; !call lp%filter(fs%Uold); call lp%filter(Ui)
          fs%Vold=fs%V; !call lp%filter(fs%Vold); call lp%filter(Vi)
@@ -525,7 +535,7 @@ contains
             ! EL Source Term
             ! Advance particles
             call lp%advance(dt=time%dtmid,U=fs%Uold,V=fs%Vold,W=fs%Wold,rho=rhof,visc=fs%visc,diff=sc%diff,&
-                 &          stress_x=resU,stress_y=resV,stress_z=resW,T=sc%SCold,&
+                 &          stress_x=resU,stress_y=resV,stress_z=resW,divDiff=resSC,T=sc%SCold,&
                  &          srcU=srcUlp,srcV=srcVlp,srcW=srcWlp,srcSC=srcSClp,fCp=fCp)
          else
             ! EE Source Term
@@ -554,9 +564,9 @@ contains
          end if
 
          ! Compute PTKE and store source terms
-         !call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC%SCold,fCp=fCp,&
-         !    &           diff=sc%diff,srcU=resU,srcV=resV,srcW=resW,srcT=tmp,lagrange=lagrange)
-         !srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW; srcSClp=srcSClp+tmp
+         call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC%SCold,fCp=fCp,&
+             &           diff=sc%diff,srcU=resU,srcV=resV,srcW=resW,srcT=tmp,lagrange=lagrange)
+         srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW; srcSClp=srcSClp+tmp
          
        end block lpt
 
@@ -574,7 +584,8 @@ contains
        do while (time%it.le.time%itmax)
 
           ! ============= SCALAR SOLVER =======================
-             
+          sc%diff=sc%diff*diff_mult
+          !lp%diff_pt=sc%diff
           ! Build mid-time scalar
           sc%SC=0.5_WP*(sc%SC+sc%SCold)
              
@@ -614,6 +625,7 @@ contains
             end do
           end block scalar_bcond
           call sc%rho_multiply()
+          sc%diff=sc%diff/diff_mult
 
           ! ===================================================
 

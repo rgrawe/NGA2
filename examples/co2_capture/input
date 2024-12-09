@@ -4,9 +4,9 @@ Partition :	4 1 1
 # Mesh definition
 Pipe diameter : 0.039
 Pipe length   : 0.2574
-nx : 105
-ny : 16
-nz : 16
+nx : 258
+ny : 41
+nz : 41
 
 # Fluid properties
 Pressure : 1e5
@@ -21,7 +21,7 @@ Inlet T : 295
 Inlet CO2 : 1.0
 
 # Particle parameters
-Particle volume fraction : 0.2
+Particle volume fraction : 0.3
 Particle diameter : 2.4e-3
 Particle density :  640
 Particle temperature : 295

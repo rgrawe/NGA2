@@ -101,8 +101,6 @@ contains
                      cfg%Gib(i,j,k)=cfg%xm(i)-(cfg%xL-x0)
                   elseif (R.lt.0.5_WP*D.and.cfg%xm(i).ge.cfg%xL-x0) then
                      cfg%Gib(i,j,k)=-min(cfg%xm(i)-(cfg%xL-x0),R-0.5_WP*D)
-                  elseif (R.lt.0.0015_WP.and.cfg%xm(i).gt.x0.and.cfg%xm(i).lt.cfg%xL-x0) then
-                     cfg%Gib(i,j,k)=-min(cfg%xm(i)-x0,0.0015_WP-R)
                   else
                      cfg%Gib(i,j,k)=0.5_WP*D-R
                   end if
