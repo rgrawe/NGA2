@@ -1077,6 +1077,49 @@ contains
 
          ! Heat of adsorption
          H_a=31.904e3_WP
+
+      case('Z13XWILK','z13xwilk')
+         ! Zeolite 13X sorbent
+         ! Wilkins and Rajendran, Adsorption (2019)
+
+         ! Equilibrium expression
+         PCO2=fYCO2/W_CO2*frho*Rcst*fT
+         PCO2_clip=max(PCO2,0.0_WP)
+         a1=  3.257_WP !mol/kg
+         a2=  3.240_WP !mol/kg
+         b01=  2.09e-7_WP !m^3/mol
+         b02=  1.06e-7_WP !m^3/mol
+         E1R=  42.67e3_WP !J/mol
+         E2R=  32.21e3_WP !J/mol
+
+         b1=b01/(Rcst*p%T)*exp(E1R/(Rcst*p%T)) !1/Pa
+         b2=b02/(Rcst*p%T)*exp(E2R/(Rcst*p%T)) !1/Pa
+
+         qs=(a1*b1*PCO2_clip/(1+b1*PCO2_clip)+a2*b2*PCO2_clip/(1+b2*PCO2_clip)) !mol CO2/kg sorbent
+         mc_s=W_CO2*(Pi/6.0_WP*p%d**3)*this%rho*qs !kg CO2
+         qs=qs+epsilon(1.0_WP)
+
+         ! Molecular diffusivity
+         T_ref=298.0_WP !K
+         D_ref=1.67e-5_WP !m^2/s
+         D_m=D_ref*(p%T/T_ref)**1.5_WP
+
+         ! Knudsen diffusivity
+         d_p=1.5e-6_WP !m
+         D_k=d_p/3.0_WP*(8.0_WP*Rcst*p%T/(Pi*W_CO2))**(1.0_WP/2.0_WP)
+         
+         ! Effective diffusivity
+         eps_p=0.35_WP 
+         tau_p=3.0_WP 
+         D_e=1.0_WP/(tau_p/eps_p*(1/D_m+1/D_k))
+         mc_clip=max(p%mc,0.0_WP)
+
+         !Estimate k_ldf
+         k_ldf=15.0_WP*D_e/((p%d/2)**2.0_WP)*PCO2_clip/(Rcst*fT)/(qs*this%rho)
+         dmdt=k_ldf*(mc_s-mc_clip)
+
+         ! Heat of adsorption
+         H_a=50.907e3_WP-5156_WP*mc_clip/(W_CO2*(Pi/6.0_WP*p%d**3)*this%rho)
          
       case('NONE','None')
          dmdt=0.0_WP

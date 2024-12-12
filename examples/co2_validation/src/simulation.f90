@@ -212,7 +212,7 @@ contains
       call param_read('Max time',time%tmax)
       call param_read('Max cfl number',time%cflmax)
       time%dt=time%dtmax
-      time%itmax=2!10 ! <- Needs additional iterations due to high density gradients
+      time%itmax=10 ! <- Needs additional iterations due to high density gradients
     end block initialize_timetracker
 
     ! Create a low Mach flow solver with bconds
