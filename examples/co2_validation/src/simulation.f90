@@ -212,7 +212,7 @@ contains
       call param_read('Max time',time%tmax)
       call param_read('Max cfl number',time%cflmax)
       time%dt=time%dtmax
-      time%itmax=10 ! <- Needs additional iterations due to high density gradients
+      time%itmax=2!10 ! <- Needs additional iterations due to high density gradients
     end block initialize_timetracker
 
     ! Create a low Mach flow solver with bconds
@@ -279,7 +279,7 @@ contains
       real(WP) :: dp,VFavg,Tp,Volp,Volc,x0
       real(WP), dimension(3) :: pos
       integer :: i,np
-      logical :: remove
+      logical :: remove, preset_bed
       ! Create solver
       lp=lpt(cfg=cfg,name='LPT')
       ! Set scalar information
@@ -302,51 +302,77 @@ contains
       call param_read('Particle volume fraction',VFavg)
       ! Get particle starting position
       call param_read('x0',x0)
-      ! Root process initializes particles uniformly
-      if (lp%cfg%amRoot) then
+      ! Get particle starting position
+      call param_read('Preset bed',preset_bed)
+      
+      if (preset_bed) then
+         call lp%read(filename='bed.file')
+         ! Loop through particles
+         do i=1,lp%np_
+            ! Zero out velocity
+            lp%p(i)%vel=0.0_WP
+            ! Give id (fixed)
+            lp%p(i)%id=-1
+            ! Set the temperature
+            lp%p(i)%T=Tp
+         end do
+         call lp%sync()
+         ! Recalculate VF
+         call lp%update_VF()
+         ! Get number of particles
+         np=lp%np
          ! Particle volume
          Volp = Pi/6.0_WP*dp**3
          ! Cylinder volume
          Volc=0.25_WP*Pi*D**2*(lp%cfg%xL-2.0_WP*x0)
-         ! Get number of particles
-         np=int(VFavg*Volc/Volp)
-         call lp%resize(np)
-         ! Distribute particles
-         VFavg=0.0_WP
-         do i=1,np
-            ! Give position
-            remove=.true.
-            do while (remove)
-               lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin)+x0,lp%cfg%x(lp%cfg%imax+1)-x0),&
-                    &       random_uniform(lp%cfg%y(lp%cfg%jmin),lp%cfg%y(lp%cfg%jmax+1)),&
-                    &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
-               if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
-               if (sqrt(sum(lp%p(i)%pos(2:3)**2)).lt.0.5*D) remove=.false.
+         VFavg=np*Volp/Volc
+      else
+         ! Root process initializes particles uniformly
+         if (lp%cfg%amRoot) then
+            ! Particle volume
+            Volp = Pi/6.0_WP*dp**3
+            ! Cylinder volume
+            Volc=0.25_WP*Pi*D**2*(lp%cfg%xL-2.0_WP*x0)
+            ! Get number of particles
+            np=int(VFavg*Volc/Volp)
+            call lp%resize(np)
+            ! Distribute particles
+            VFavg=0.0_WP
+            do i=1,np
+               ! Give position
+               remove=.true.
+               do while (remove)
+                  lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin)+x0,lp%cfg%x(lp%cfg%imax+1)-x0),&
+                       &       random_uniform(lp%cfg%y(lp%cfg%jmin),lp%cfg%y(lp%cfg%jmax+1)),&
+                       &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
+                  if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
+                  if (sqrt(sum(lp%p(i)%pos(2:3)**2)).lt.0.5*D) remove=.false.
+               end do
+               ! Give id (fixed)
+               lp%p(i)%id=-1
+               ! Set the diameter
+               lp%p(i)%d=dp
+               ! Set the temperature
+               lp%p(i)%T=Tp
+               ! Give zero mass of adsorbed CO2
+               lp%p(i)%Mc=0.0_WP
+               lp%p(i)%MacroCO2=0.0_WP
+               ! Give zero velocity
+               lp%p(i)%vel=0.0_WP
+               ! Give zero collision force
+               lp%p(i)%Acol=0.0_WP
+               lp%p(i)%Tcol=0.0_WP
+               ! Give zero dt
+               lp%p(i)%dt=0.0_WP
+               ! Locate the particle on the mesh
+               lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+               ! Activate the particle
+               lp%p(i)%flag=0
+               ! Sum up volume
+               VFavg=VFavg+Pi*lp%p(i)%d**3/6.0_WP
             end do
-            ! Give id (fixed)
-            lp%p(i)%id=-1
-            ! Set the diameter
-            lp%p(i)%d=dp
-            ! Set the temperature
-            lp%p(i)%T=Tp
-            ! Give zero mass of adsorbed CO2
-            lp%p(i)%Mc=0.0_WP
-            lp%p(i)%MacroCO2=0.0_WP
-            ! Give zero velocity
-            lp%p(i)%vel=0.0_WP
-            ! Give zero collision force
-            lp%p(i)%Acol=0.0_WP
-            lp%p(i)%Tcol=0.0_WP
-            ! Give zero dt
-            lp%p(i)%dt=0.0_WP
-            ! Locate the particle on the mesh
-            lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
-            ! Activate the particle
-            lp%p(i)%flag=0
-            ! Sum up volume
-            VFavg=VFavg+Pi*lp%p(i)%d**3/6.0_WP
-         end do
-         VFavg=VFavg/Volc
+            VFavg=VFavg/Volc
+         end if
       end if
       call lp%sync()
 

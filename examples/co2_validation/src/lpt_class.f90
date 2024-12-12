@@ -867,7 +867,7 @@ contains
       ! Tenneti and Subramaniam (2011)
       b1=5.81_WP*pVF/fVF**3+0.48_WP*pVF**(1.0_WP/3.0_WP)/fVF**4
       b2=pVF**3*Re*(0.95_WP+0.61_WP*pVF**3/fVF**2)
-      corr=fVF*(1.0_WP+0.15_WP*Re**(0.687_WP)/fVF**3+b1+b2)           
+      corr=fVF*((1.0_WP+0.15_WP*Re**(0.687_WP))/fVF**3+b1+b2)           
       ! Return acceleration and optimal timestep size
       acc=(fvel-p%vel)*corr/tau+fstress/rhop
       opt_dt=tau/corr/real(this%nstep,WP)
@@ -984,7 +984,7 @@ contains
          H_a=37.9e3_WP !J/mol Son et al. Journal of Chemical & Engineering Data (2018)
 
       case('Z13XAPG','z13xapg')
-         !A modfied Zeolite 13X (APG) equilibrium and LDF expression
+         !A modfied Zeolite 13X (APG) equilibrium and bi-LDF expression
          !Equilibrium data from Wang et al. Chemical Engineering Journal (2012)
          !See model from Wilkins and Rajendran, Adsorption (2019) and Purdue, Journal of Physical Chemistry C (2018)
 
@@ -1031,6 +1031,49 @@ contains
 
          ! CO2 adsorbed in micropores
          dmdt=15.0_WP*D_c/(d_p/2.0_WP)**2*(mc_s-mc_clip)
+
+         ! Heat of adsorption
+         H_a=31.904e3_WP
+
+         case('Z13XAPGLDF','z13xapgldf')
+         !A modfied Zeolite 13X (APG) equilibrium and LDF expression
+         !Equilibrium data from Wang et al. Chemical Engineering Journal (2012)
+         !See model from Wilkins and Rajendran, Adsorption (2019) and Purdue, Journal of Physical Chemistry C (2018)
+
+         PCO2=fYCO2/W_CO2*frho*Rcst*fT
+         PCO2_clip=max(PCO2,0.0_WP)
+         a1= 3.684 !mol/kg
+         a2= 1.074 !mol/kg
+         b01= 2.975e-6 !m^3/mol
+         b02= 6.516e-6 !m^3/mol
+         E1R= 27.4e3 !J/mol
+         E2R= 34.04e3 !J/mol
+
+         b1=b01/(Rcst*p%T)*exp(E1R/(Rcst*p%T)) !1/Pa
+         b2=b02/(Rcst*p%T)*exp(E2R/(Rcst*p%T)) !1/Pa
+
+         qs=(a1*b1*PCO2_clip/(1+b1*PCO2_clip)+a2*b2*PCO2_clip/(1+b2*PCO2_clip)) !mol CO2/kg sorbent
+         mc_s=W_CO2*(Pi/6.0_WP*p%d**3)*this%rho*qs !kg CO2
+         qs=qs+epsilon(1.0_WP)
+
+         ! Molecular diffusivity
+         T_ref=298.0_WP !K
+         D_ref=1.67e-5_WP !m^2/s
+         D_m=D_ref*(p%T/T_ref)**1.5_WP
+
+         ! Knudsen diffusivity
+         d_p=1.5e-6_WP !m
+         D_k=d_p/3.0_WP*(8.0_WP*Rcst*p%T/(Pi*W_CO2))**(1.0_WP/2.0_WP)
+         
+         ! Effective diffusivity
+         eps_p=0.3_WP 
+         tau_p=2.0_WP 
+         D_e=1.0_WP/(tau_p/eps_p*(1/D_m+1/D_k))
+         mc_clip=max(p%mc,0.0_WP)
+
+         !Estimate k_ldf
+         k_ldf=15.0_WP*D_e/((p%d/2)**2.0_WP)*PCO2_clip/(Rcst*fT)/(qs*this%rho)
+         dmdt=k_ldf*(mc_s-mc_clip)
 
          ! Heat of adsorption
          H_a=31.904e3_WP
