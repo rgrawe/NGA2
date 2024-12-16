@@ -359,9 +359,6 @@ contains
                lp%p(i)%MacroCO2=0.0_WP
                ! Give zero velocity
                lp%p(i)%vel=0.0_WP
-               ! Give zero collision force
-               lp%p(i)%Acol=0.0_WP
-               lp%p(i)%Tcol=0.0_WP
                ! Give zero dt
                lp%p(i)%dt=0.0_WP
                ! Locate the particle on the mesh

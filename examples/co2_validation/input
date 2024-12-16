@@ -2,37 +2,37 @@
 Partition :	4 1 1
 
 # Mesh definition
-Pipe diameter : 0.0282
-Pipe length   : 0.072
-nx : 72
-ny : 28
-nz : 28
+Pipe diameter : 0.025
+Pipe length   : 0.371538
+nx : 138
+ny : 10
+nz : 10
 
 # Fluid properties
-Pressure : 0.97e5
-Inlet velocity : 0.009339
-x0 : 0.004
-Inert gas : Helium
+Pressure : 1e5
+Inlet velocity : 0.075
+x0 : 0.0107692
+Inert gas : Nitrogen
 
 # Scalars
-Initial T: 295
+Initial T: 303
 Initial CO2 : 0.0
-Inlet T : 295
-Inlet CO2 : 1.0
+Inlet T : 303
+Inlet CO2 : 0.217
 
 # Particle parameters
-Particle volume fraction : 0.3
-Particle diameter : 0.001
-Particle density :  944
-Particle temperature : 295
-Particle heat capacity : 856
-Filter width : 0.0035
+Particle volume fraction : 0.2
+Particle diameter : 0.0027
+Particle density :  1099.5
+Particle temperature : 303
+Particle heat capacity : 920
+Filter width : 0.0081
 Preset bed : .true.
 
-Adsorption model : Z13XWILK
+Adsorption model : Z13XAPGLDF
 
 # Time integration
-Max timestep size :	1e-4
+Max timestep size :	1e-3
 Max cfl number:		0.9
 Max time : 		10
 
