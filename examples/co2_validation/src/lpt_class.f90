@@ -31,6 +31,9 @@ module lpt_class
      real(WP) :: d                        !< Particle diameter
      real(WP), dimension(3) :: pos        !< Particle center coordinates
      real(WP), dimension(3) :: vel        !< Velocity of particle
+     real(WP), dimension(3) :: angVel     !< Angular velocity of particle
+     real(WP), dimension(3) :: Acol       !< Collision acceleration
+     real(WP), dimension(3) :: Tcol       !< Collision torque
      real(WP) :: T                        !< Temperature
      real(WP) :: Mc                       !< Mass of adsorbed CO2
      real(WP) :: MacroCO2                 !< Mass of CO2 in the macropores
@@ -41,7 +44,7 @@ module lpt_class
   end type part
   !> Number of blocks, block length, and block types in a particle
   integer, parameter                         :: part_nblock=3
-  integer           , dimension(part_nblock) :: part_lblock=[1,11,4]
+  integer           , dimension(part_nblock) :: part_lblock=[1,20,4]
   type(MPI_Datatype), dimension(part_nblock) :: part_tblock=[MPI_INTEGER8,MPI_DOUBLE_PRECISION,MPI_INTEGER]
   !> MPI_PART derived datatype and size
   type(MPI_Datatype) :: MPI_PART
@@ -134,6 +137,12 @@ module lpt_class
      real(WP), dimension(:,:,:), allocatable :: diff_pt  !< Pseudo-turbulent diffusivity, cell-centered
      real(WP), dimension(:,:,:,:), allocatable :: itpr_x,itpr_y,itpr_z !< Interpolation from cell face to cell center
 
+     ! Immersed boundaries
+     real(WP), dimension(:,:,:), allocatable :: Gib
+     real(WP), dimension(:,:,:), allocatable :: Nxib
+     real(WP), dimension(:,:,:), allocatable :: Nyib
+     real(WP), dimension(:,:,:), allocatable :: Nzib
+
      ! Scalar indices
      integer :: nscalar,ind_CO2,ind_T
 
@@ -151,6 +160,7 @@ module lpt_class
      procedure :: get_max                                !< Extract various monitoring data
      procedure :: get_cfl                                !< Calculate maximum CFL
      procedure :: update_VF                              !< Compute particle volume fraction
+     procedure :: update_VFIB                            !< Correct particle volume fraction for IBs
      procedure :: get_ptke                               !< Compute pseudo-turbulent kinetic energy (and Reynolds stress)
      procedure :: filter                                 !< Apply volume filtering to field
      procedure :: inject                                 !< Inject particles at a prescribed boundary
@@ -173,7 +183,7 @@ contains
     class(config), target, intent(in) :: cfg
     character(len=*), optional :: name
     integer :: i,j,k,l
-
+    
     ! Set the name for the solver
     if (present(name)) self%name=trim(adjustl(name))
 
@@ -193,6 +203,12 @@ contains
     allocate(self%VF  (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%VF=0.0_WP
     allocate(self%ptke(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%ptke=0.0_WP
     allocate(self%diff_pt(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%diff_pt=0.0_WP
+
+    ! Immersed boundaries information
+    allocate(self%Gib (self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%Gib =0.0_WP
+    allocate(self%Nxib(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%Nxib=0.0_WP
+    allocate(self%Nyib(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%Nyib=0.0_WP
+    allocate(self%Nzib(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%Nzib=0.0_WP
 
     ! Zero friction by default
     self%mu_f=0.0_WP
@@ -432,9 +448,11 @@ contains
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout), optional :: srcW   !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
     real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:,:), intent(inout), optional :: srcSC
     integer :: i,j,k,ierr
-    real(WP) :: mydt,dt_done,Ip,dmdt,dcdt,dm,dTdt,dTdt_r,dTemp,mass,fT,fCp
+    real(WP) :: mydt,dt_done,Ip,dmdt,dcdt,dm,dTdt,dTdt_r,dTemp,mass,fT,fCp,d12,buf
     real(WP), dimension(3) :: acc,dmom
     type(part) :: myp,pold
+    real(WP), dimension(3) :: n12,pos
+    integer, dimension(3) :: ind
 
     ! Zero out source term arrays
     if (present(srcU)) srcU=0.0_WP
@@ -466,7 +484,7 @@ contains
           !myp%pos=pold%pos+0.5_WP*mydt*myp%vel
           !myp%vel=pold%vel+0.5_WP*mydt*acc
           myp%Mc=pold%Mc+0.5_WP*mydt*dmdt
-          myp%MacroCO2=pold%MacroCO2+0.5_WP*mydt*dcdt
+              myp%MacroCO2=pold%MacroCO2+0.5_WP*mydt*dcdt
           myp%T=pold%T+0.5_WP*mydt*dTdt
           ! Correct with midpoint rule
           call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,diff=diff,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=T,YCO2=YCO2,&
@@ -483,16 +501,36 @@ contains
           dm=mydt*dmdt
           dTemp=(mass*this%pCp*(dTdt-dTdt_r)*mydt)/fCp+(dm*myp%T*this%pCp)/fCp
           dmom=mydt*acc*mass+myp%vel*dm
-          if (this%cfg%nx.gt.1.and.present(srcU)) call this%cfg%set_scalar(Sp=-dmom(1),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcU,bc='n')
-          if (this%cfg%ny.gt.1.and.present(srcV)) call this%cfg%set_scalar(Sp=-dmom(2),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcV,bc='n')
-          if (this%cfg%nz.gt.1.and.present(srcW)) call this%cfg%set_scalar(Sp=-dmom(3),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcW,bc='n')
+          call this%cfg%set_scalar(Sp=-dmom(1),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcU,bc='n')
+          call this%cfg%set_scalar(Sp=-dmom(2),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcV,bc='n')
+          call this%cfg%set_scalar(Sp=-dmom(3),pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcW,bc='n')
           if (present(srcSC)) then
              call this%cfg%set_scalar(Sp=-dTemp,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcSC(:,:,:,this%ind_T  ),bc='n')
              call this%cfg%set_scalar(Sp=-dm   ,pos=myp%pos,i0=myp%ind(1),j0=myp%ind(2),k0=myp%ind(3),S=srcSC(:,:,:,this%ind_CO2),bc='n')
           end if
-          
+
           ! Increment
           dt_done=dt_done+mydt
+                    
+          ! Get distance to IB and normal
+          d12=abs(this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Gib,bc='n'))
+          if (d12.gt.4.0_WP*this%cfg%min_meshsize) cycle
+          n12(1)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nxib,bc='n')
+          n12(2)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nyib,bc='n')
+          n12(3)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nzib,bc='n')
+          buf = sqrt(sum(n12*n12))+epsilon(1.0_WP)
+          n12 = -n12/buf
+          ! Get location of image particle
+          pos=this%p(i)%pos+2.0_WP*d12*n12
+          ind=this%cfg%get_ijk_global(pos,this%p(i)%ind)
+          call this%cfg%set_scalar(Sp=-dmom(1),pos=pos,i0=ind(1),j0=ind(2),k0=ind(3),S=srcU,bc='n')
+          call this%cfg%set_scalar(Sp=-dmom(2),pos=pos,i0=ind(1),j0=ind(2),k0=ind(3),S=srcV,bc='n')
+          call this%cfg%set_scalar(Sp=-dmom(3),pos=pos,i0=ind(1),j0=ind(2),k0=ind(3),S=srcW,bc='n')
+          if (present(srcSC)) then
+             call this%cfg%set_scalar(Sp=-dTemp,pos=pos,i0=ind(1),j0=ind(2),k0=ind(3),S=srcSC(:,:,:,this%ind_T  ),bc='n')
+             call this%cfg%set_scalar(Sp=-dm   ,pos=pos,i0=ind(1),j0=ind(2),k0=ind(3),S=srcSC(:,:,:,this%ind_CO2),bc='n')
+          end if
+          
        end do
        ! Correct the position to take into account periodicity
        if (this%cfg%xper) myp%pos(1)=this%cfg%x(this%cfg%imin)+modulo(myp%pos(1)-this%cfg%x(this%cfg%imin),this%cfg%xL)
@@ -536,6 +574,9 @@ contains
           srcSC(:,:,:,i)=srcSC(:,:,:,i)/this%cfg%vol; call this%cfg%syncsum(srcSC(:,:,:,i)); call this%filter(srcSC(:,:,:,i))
        end do
     end if
+    if (this%cfg%nx.eq.1) srcU=0.0_WP
+    if (this%cfg%ny.eq.1) srcV=0.0_WP
+    if (this%cfg%nz.eq.1) srcW=0.0_WP
 
     ! Recompute volume fraction
     call this%update_VF()
@@ -595,7 +636,6 @@ contains
        W_inert=W_N2
        fCp_inert=fCp_N2
     end select
-    
 
     ! Interpolate fluid quantities to particle location
     interpolate: block
@@ -618,7 +658,6 @@ contains
       ! Interpolate the CO2 mass fraction to the particle location
       fYCO2=this%cfg%get_scalar(pos=p%pos,i0=p%ind(1),j0=p%ind(2),k0=p%ind(3),S=YCO2,bc='n')
     end block interpolate
-
     ! Particle Reynolds number
     Re=fVF*frho*norm2(p%vel-fvel)*p%d/fvisc+epsilon(1.0_WP)
 
@@ -627,7 +666,6 @@ contains
 
     ! Particle response time
     tau=rhop*p%d**2/(18.0_WP*fvisc)
-
     ! Compute acceleration due to drag
     compute_drag: block
       real(WP) :: corr,b1,b2
@@ -639,7 +677,6 @@ contains
       acc=(fvel-p%vel)*corr/tau+fstress/rhop
       opt_dt=tau/corr/real(this%nstep,WP)
     end block compute_drag
-
     ! Compute mass transfer
     mass_transfer: block
       use messager, only: die
@@ -886,39 +923,33 @@ contains
          dmdt=k_ldf*(mc_s-mc_clip)
 
          ! Heat of adsorption
-         H_a=50.907e3_WP-5156_WP*mc_clip/(W_CO2*(Pi/6.0_WP*p%d**3)*this%rho)
+         H_a=50.907e3_WP-5156.0_WP*mc_clip/(W_CO2*(Pi/6.0_WP*p%d**3)*this%rho)
          
       case('NONE','None')
+         dcdt=0.0_WP
          dmdt=0.0_WP
+         H_a=0.0_WP
       case default
          call die('lpt_class get_rhs: Unknown ads model')
       end select
     end block mass_transfer
-
     ! TO DO Compute intraparticle effects
 
     ! Compute heat transfer
     compute_heat_transfer: block
       real(WP) :: Pr,Nu,theta
-      
       !Particle dTdt from reaction      
       dTdt_r=H_a/(rhop*W_CO2*(Pi/6.0_WP*p%d**3)*this%pCp)*dmdt
-
       !Find mixture heat capacity
       fCp=fYCO2*fCp_CO2+(1-fYCO2)*fCp_inert
-      
       Pr=fvisc/fdiff
       !Nu=(7.0_WP-10.0_WP*fVF+5.0_WP*fVF**2)*(1.0_WP+0.7_WP*Re**(0.2_WP)*Pr**(1.0_WP/3.0_WP))& ! Gunn (1978)
       !     + (1.33_WP-2.4_WP*fVF+1.2_WP*fVF**2)*Re**(0.7_WP)*Pr**(1.0_WP/3.0_WP)
       Nu=(-0.46_WP+1.77_WP*fVF+0.69_WP*fVF**2)/fVf**3+(1.37_WP-2.4_WP*fVf+1.2_WP*fVf**2)*Re**(0.7_WP)*Pr**(1.0_WP/3.0_WP) ! Sun (2015)
       theta=1.0_WP-1.6_WP*pVF*fVF-3*pVF*fVF**4*exp(-Re**0.4_WP*pVF)
       dTdt=Nu*fCp*(fT-p%T)/(3.0_WP*Pr*this%pCp*tau)*pi/(4.0_WP*theta)+dTdt_r !<- Includes Sun's bulk Nu correction factor
-
-      
     end block compute_heat_transfer
-
   end subroutine get_rhs
-
 
   !> Update particle volume fraction using our current particles
   subroutine update_VF(this)
@@ -926,7 +957,9 @@ contains
     implicit none
     class(lpt), intent(inout) :: this
     integer :: i
-    real(WP) :: Vp
+    real(WP) :: Vp,d12,buf
+    real(WP), dimension(3) :: n12,pos
+    integer, dimension(3) :: ind
     ! Reset volume fraction
     this%VF=0.0_WP
     ! Transfer particle volume
@@ -936,6 +969,18 @@ contains
        ! Transfer particle volume
        Vp=Pi/6.0_WP*this%p(i)%d**3
        call this%cfg%set_scalar(Sp=Vp,pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%VF,bc='n')
+       ! Get distance to IB and normal
+       d12=abs(this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Gib,bc='n'))
+       if (d12.gt.4.0_WP*this%cfg%min_meshsize) cycle
+       n12(1)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nxib,bc='n')
+       n12(2)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nyib,bc='n')
+       n12(3)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nzib,bc='n')
+       buf = sqrt(sum(n12*n12))+epsilon(1.0_WP)
+       n12 = -n12/buf
+       ! Get location of image particle
+       pos=this%p(i)%pos+2.0_WP*d12*n12
+       ind=this%cfg%get_ijk_global(pos,this%p(i)%ind)
+       call this%cfg%set_scalar(Sp=Vp,pos=pos,i0=ind(1),j0=ind(2),k0=ind(3),S=this%VF,bc='n')
     end do
     this%VF=this%VF/this%cfg%vol
     ! Sum at boundaries
@@ -943,6 +988,51 @@ contains
     ! Apply volume filter
     call this%filter(this%VF)
   end subroutine update_VF
+
+  !> Update particle volume fraction using image particles to enforce Neumann across IB
+  subroutine update_VFIB(this,Gib,Nxib,Nyib,Nzib)
+    use mathtools, only: Pi
+    implicit none
+    class(lpt), intent(inout) :: this
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Gib  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Nxib !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Nyib !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Nzib !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+    integer :: i
+    real(WP) :: Vp,d12,buf
+    integer, dimension(3) :: ind
+    real(WP), dimension(3) :: n12,pos
+    real(WP), dimension(:,:,:), allocatable :: VF
+    ! Reset volume fraction
+    allocate(VF(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));VF=0.0_WP
+    !Transfer particle volume
+    do i=1,this%np_
+       ! Skip inactive particle
+       if (this%p(i)%flag.eq.1.or.this%p(i)%id.eq.0) cycle
+       ! Get distance to IB and normal
+       d12=abs(this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=Gib,bc='n'))
+       if (d12.gt.4.0_WP*this%cfg%min_meshsize) cycle
+       n12(1)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=Nxib,bc='n')
+       n12(2)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=Nyib,bc='n')
+       n12(3)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=Nzib,bc='n')
+       buf = sqrt(sum(n12*n12))+epsilon(1.0_WP)
+       n12 = -n12/buf
+       ! Get location of image particle
+       pos=this%p(i)%pos+2.0_WP*d12*n12
+       ind=this%cfg%get_ijk_global(pos,this%p(i)%ind)
+       ! Transfer image particle volume
+       Vp=Pi/6.0_WP*this%p(i)%d**3
+       call this%cfg%set_scalar(Sp=Vp,pos=pos,i0=ind(1),j0=ind(2),k0=ind(3),S=VF,bc='n')
+    end do
+    VF=VF/this%cfg%vol
+    ! Sum at boundaries
+    call this%cfg%syncsum(VF)
+    ! Apply volume filter
+    call this%filter(VF)
+    this%VF=this%VF+VF
+    ! Clean up
+    deallocate(VF)
+  end subroutine update_VFIB
 
   !> Compute pseudo-turbulent kinetic energy and Reynolds stresses
   !> Mehrabadi et al. (2015) "Pseudo-turbulent gas-phase velocity 

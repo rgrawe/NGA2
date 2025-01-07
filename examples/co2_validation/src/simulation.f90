@@ -42,8 +42,8 @@ module simulation
   real(WP), dimension(:,:,:), allocatable :: resU,resV,resW,resSC
   real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi,rhof
   real(WP), dimension(:,:,:), allocatable :: srcUlp,srcVlp,srcWlp,ghost
-  real(WP), dimension(:,:,:), allocatable :: tmp1,tmp2
-  real(WP), dimension(:,:,:,:), allocatable :: srcSClp
+  real(WP), dimension(:,:,:), allocatable :: tmp1,tmp2,tmp3
+  real(WP), dimension(:,:,:,:), allocatable :: tmpSC,srcSClp
   real(WP) :: visc,Uin
 
   !> Scalar indices
@@ -65,6 +65,9 @@ module simulation
 
   ! Ghost point IBM
   integer :: gp_no
+
+  !> Max timestep size for LPT
+  real(WP) :: lp_dt,lp_dt_max
 
 contains
 
@@ -263,7 +266,9 @@ contains
       allocate(srcWlp  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(tmp1    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(tmp2    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+      allocate(tmp3    (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(srcSClp (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,1:nscalar))
+      allocate(tmpSC   (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_,1:nscalar))
       allocate(Ui      (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(Vi      (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       allocate(Wi      (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
@@ -304,6 +309,14 @@ contains
       call param_read('x0',x0)
       ! Get particle starting position
       call param_read('Preset bed',preset_bed)
+      ! Maximum timestep size used for particles
+      call param_read('Particle timestep size',lp_dt_max,default=huge(1.0_WP))
+      lp_dt=lp_dt_max
+      ! Immersed boundaries
+      lp%Gib =cfg%Gib
+      lp%Nxib=cfg%Nib(1,:,:,:)
+      lp%Nyib=cfg%Nib(2,:,:,:)
+      lp%Nzib=cfg%Nib(3,:,:,:)
       
       if (preset_bed) then
          call lp%read(filename='bed.file')
@@ -317,8 +330,6 @@ contains
             lp%p(i)%T=Tp
          end do
          call lp%sync()
-         ! Recalculate VF
-         call lp%update_VF()
          ! Get number of particles
          np=lp%np
          ! Particle volume
@@ -375,6 +386,7 @@ contains
 
       ! Get initial particle volume fraction
       call lp%update_VF()
+      !call lp%update_VFIB(Gib=cfg%Gib,Nxib=cfg%Nib(1,:,:,:),Nyib=cfg%Nib(2,:,:,:),Nzib=cfg%Nib(3,:,:,:))
       if (lp%cfg%amRoot) then
          print*,"===== Particle Setup Description ====="
          print*,'Number of particles', np
@@ -487,6 +499,7 @@ contains
       call ens_out%add_scalar('diffusivity',sc(ind_T)%diff)
       call ens_out%add_scalar('epsp',lp%VF)
       call ens_out%add_scalar('ghostpoints',ghost)
+      call ens_out%add_scalar('srcU',srcUlp)
       ! Output to ensight
       if (ens_evt%occurs()) call ens_out%write_data(time%t)
     end block create_ensight
@@ -554,6 +567,7 @@ contains
       lptfile=monitor(amroot=lp%cfg%amRoot,name='lpt')
       call lptfile%add_column(time%n,'Timestep number')
       call lptfile%add_column(time%t,'Time')
+      call lptfile%add_column(lp_dt,'Particle dt')
       call lptfile%add_column(lp%np,'Particle number')
       call lptfile%add_column(lp%VFmean,'VFp mean')
       call lptfile%add_column(lp%VFmax,'VFp max')
@@ -586,18 +600,37 @@ contains
 
        ! Particle solver
        lpt: block
+         real(WP) :: dt_done,mydt
+         ! Zero-out LPT source terms
+         srcUlp=0.0_WP; srcVlp=0.0_WP; srcWlp=0.0_WP; srcSClp=0.0_WP
          ! Get fluid stress and compute source terms
          call fs%get_div_stress(resU,resV,resW)
-         call lp%advance(dt=time%dtmid,U=fs%U,V=fs%V,W=fs%W,rho=rhof,visc=fs%visc,diff=sc(ind_T)%diff,&
-              stress_x=resU,stress_y=resV,stress_z=resW,T=sc(ind_T)%SC,YCO2=sc(ind_CO2)%SC,&
-              srcU=srcUlp,srcV=srcVlp,srcW=srcWlp,srcSC=srcSClp)
+         ! Sub-iteratore
+         call lp%get_cfl(lp_dt,cflc=cfl,cfl=cfl)
+         if (cfl.gt.0.0_WP) lp_dt=min(lp_dt*time%cflmax/cfl,lp_dt_max)
+         dt_done=0.0_WP
+         do while (dt_done.lt.time%dtmid)
+            ! Decide the timestep size
+            mydt=min(lp_dt,time%dtmid-dt_done)
+            ! Advance particles
+            call lp%advance(dt=mydt,U=fs%U,V=fs%V,W=fs%W,rho=rhof,visc=fs%visc,diff=sc(ind_T)%diff,&
+                 stress_x=resU,stress_y=resV,stress_z=resW,T=sc(ind_T)%SC,YCO2=sc(ind_CO2)%SC,&
+                 srcU=tmp1,srcV=tmp2,srcW=tmp3,srcSC=tmpSC)
+            !call lp%update_VFIB(Gib=cfg%Gib,Nxib=cfg%Nib(1,:,:,:),Nyib=cfg%Nib(2,:,:,:),Nzib=cfg%Nib(3,:,:,:))
+            srcUlp=srcUlp+tmp1
+            srcVlp=srcVlp+tmp2
+            srcWlp=srcWlp+tmp3
+            srcSClp=srcSClp+tmpSC
+            ! Increment
+            dt_done=dt_done+mydt
+         end do
          ! Compute PTKE and store source terms
-         call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC(ind_T)%SC,&
-              &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%sc,srcU=resU,srcV=resV,srcW=resW,srcT=tmp1,srcY=tmp2)
-         srcUlp=srcUlp+resU; srcVlp=srcVlp+resV; srcWlp=srcWlp+resW
-         srcSClp(:,:,:,ind_T)=srcSClp(:,:,:,ind_T)+tmp1
-         srcSClp(:,:,:,ind_CO2)=srcSClp(:,:,:,ind_CO2)+tmp2
+         !call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC(ind_T)%SC,&
+         !     &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%sc,srcU=tmp1,srcV=tmp2,srcW=tmp3,srcT=tmpSC(:,:,:,1),srcY=tmpSC(:,:,:,2))
+         !srcUlp=srcUlp+tmp1; srcVlp=srcVlp+tmp2; srcWlp=srcWlp+tmp3
+         !srcSClp=srcSClp+tmpSC
        end block lpt
+       print *, 'a'
 
        ! Remember old scalar
        do ii=1,nscalar
@@ -644,7 +677,13 @@ contains
              ! Apply IB forcing to enforce Neumann at the pipe walls
              ibforcing_sc: block
                use gp_class, only: neumann
-               call gp%apply_bcond(type=neumann,BP=0.0_WP,A=sc(ii)%SC)
+               if (ii.eq.ind_T) then
+                  ! Isothermal (T)
+                  sc(ii)%SC=cfg%VF*sc(ii)%SC+(1.0_WP-cfg%VF)*SC0(ind_T)
+               else
+                  ! Neumann (CO2)
+                  call gp%apply_bcond(type=neumann,BP=0.0_WP,A=sc(ii)%SC)
+               end if
              end block ibforcing_sc
 
              ! Apply other boundary conditions on the resulting field
@@ -822,7 +861,7 @@ contains
     ! timetracker
 
     ! Deallocate work arrays
-    deallocate(resU,resV,resW,resSC,srcUlp,srcVlp,srcWlp,srcSClp,Ui,Vi,Wi,rhof,tmp1,tmp2)
+    deallocate(resU,resV,resW,resSC,srcUlp,srcVlp,srcWlp,srcSClp,Ui,Vi,Wi,rhof,tmp1,tmp2,tmp3,tmpSC)
 
   end subroutine simulation_final
 
