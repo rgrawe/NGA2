@@ -1,16 +1,16 @@
 # Parallelization
-Partition :	4 1 1
+Partition :	1 1 1
 
 # Mesh definition
 Pipe diameter : 0.025
 Pipe length   : 0.371538
-nx : 276
-ny : 36
-nz : 36
+nx : 138
+ny : 18
+nz : 18
 
 # Fluid properties
-Pressure : 1e5
-Inlet velocity : 0.03
+Pressure : 1.33e5
+Inlet velocity : 0.075
 x0 : 0.0107692
 Inert gas : Nitrogen
 
@@ -21,21 +21,25 @@ Inlet T : 303
 Inlet CO2 : 0.217
 
 # Particle parameters
-Particle volume fraction : 0.0
+Particle volume fraction : 0.2
 Particle diameter : 0.0027
 Particle density :  1099.5
 Particle temperature : 303
 Particle heat capacity : 920
 Filter width : 0.00945
 Preset bed : .true.
-Particle timestep size : 1e-4
+Particle timestep size : 1e-3
 
-Adsorption model : NONE!Z13XAPGLDF
+Adsorption model : Z13XAPGLDF
 
 # Time integration
 Max timestep size :	1e-3
 Max cfl number:		0.9
-Max time : 		10
+Max time : 		300
 
 # Ensight output
-Ensight output period : 1e-3
+Ensight output period : 1e-1
+
+# Restart files
+Restart output period : 1e-1
+!Restart from : 1.00000E-01

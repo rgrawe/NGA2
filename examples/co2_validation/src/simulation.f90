@@ -13,6 +13,7 @@ module simulation
   use ensight_class,     only: ensight
   use partmesh_class,    only: partmesh
   use event_class,       only: event
+  use datafile_class,    only: datafile
   use monitor_class,     only: monitor
   implicit none
   private
@@ -27,6 +28,11 @@ module simulation
   type(lpt),         public :: lp
   type(gpibm),       public :: gp
   type(timetracker), public :: time
+
+  !> Provide a datafile and an event tracker for saving restarts
+  type(event)    :: save_evt
+  type(datafile) :: df
+  logical :: restarted
 
   !> Ensight postprocessing
   type(partmesh) :: pmesh
@@ -215,14 +221,52 @@ contains
       call param_read('Max time',time%tmax)
       call param_read('Max cfl number',time%cflmax)
       time%dt=time%dtmax
-      time%itmax=10 ! <- Needs additional iterations due to high density gradients
+      time%itmax=2 ! <- Needs additional iterations due to high density gradients
     end block initialize_timetracker
 
-    ! Create a low Mach flow solver with bconds
-    create_flow_solver: block
-      use lowmach_class, only: dirichlet,clipped_neumann
-      ! Create flow solver
-      fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
+    ! Handle restart/saves here
+     restart_and_save: block
+       character(len=str_medium) :: timestamp
+       ! Create event for saving restart files
+       save_evt=event(time,'Restart output')
+       call param_read('Restart output period',save_evt%tper)
+       ! Check if we are restarting
+       call param_read(tag='Restart from',val=timestamp,short='r',default='')
+       restarted=.false.; if (len_trim(timestamp).gt.0) restarted=.true.
+       if (restarted) then
+          ! If we are, read the name of the directory
+          call param_read('Restart from',timestamp,'r')
+          ! Read the datafile
+          df=datafile(pg=cfg,fdata='restart/data_'//trim(adjustl(timestamp)))
+       else
+          ! Prepare a new directory for storing files for restart
+          call execute_command_line('mkdir -p restart')
+          ! If we are not restarting, we will still need a datafile for saving restart files
+          df=datafile(pg=cfg,filename=trim(cfg%name),nval=2,nvar=5)
+          df%valname(1)='t'
+          df%valname(2)='dt'
+          df%varname(1)='U'
+          df%varname(2)='V'
+          df%varname(3)='W'
+          df%varname(4)='Temp'
+          df%varname(5)='CO2'
+       end if
+     end block restart_and_save
+
+     ! Revisit timetracker to adjust time and time step values if this is a restart
+     update_timetracker: block
+       if (restarted) then
+          call df%pullval(name='t' ,val=time%t )
+          call df%pullval(name='dt',val=time%dt)
+          time%told=time%t-time%dt
+       end if
+     end block update_timetracker
+
+     ! Create a low Mach flow solver with bconds
+     create_flow_solver: block
+       use lowmach_class, only: dirichlet,clipped_neumann
+       ! Create flow solver
+       fs=lowmach(cfg=cfg,name='Variable density low Mach NS')
       ! Define boundary conditions
       call fs%add_bcond(name= 'inflow',type=dirichlet      ,locator=left_of_domain ,face='x',dir=-1,canCorrect=.false.)
       call fs%add_bcond(name='outflow',type=clipped_neumann,locator=right_of_domain,face='x',dir=+1,canCorrect=.true. )
@@ -285,6 +329,8 @@ contains
       real(WP), dimension(3) :: pos
       integer :: i,np
       logical :: remove, preset_bed
+      character(len=str_medium) :: timestamp
+      
       ! Create solver
       lp=lpt(cfg=cfg,name='LPT')
       ! Set scalar information
@@ -318,18 +364,10 @@ contains
       lp%Nyib=cfg%Nib(2,:,:,:)
       lp%Nzib=cfg%Nib(3,:,:,:)
       
-      if (preset_bed) then
-         call lp%read(filename='bed.file')
-         ! Loop through particles
-         do i=1,lp%np_
-            ! Zero out velocity
-            lp%p(i)%vel=0.0_WP
-            ! Give id (fixed)
-            lp%p(i)%id=-1
-            ! Set the temperature
-            lp%p(i)%T=Tp
-         end do
-         call lp%sync()
+      if (restarted) then
+         call param_read('Restart from',timestamp,'r')
+         ! Read the part file
+         call lp%read(filename='restart/part_'//trim(adjustl(timestamp)))
          ! Get number of particles
          np=lp%np
          ! Particle volume
@@ -338,55 +376,75 @@ contains
          Volc=0.25_WP*Pi*D**2*(lp%cfg%xL-2.0_WP*x0)
          VFavg=np*Volp/Volc
       else
-         ! Root process initializes particles uniformly
-         if (lp%cfg%amRoot) then
+         if (preset_bed) then
+            call lp%read(filename='bed.file')
+            ! Loop through particles
+            do i=1,lp%np_
+               ! Zero out velocity
+               lp%p(i)%vel=0.0_WP
+               ! Give id (fixed)
+               lp%p(i)%id=-1
+               ! Set the temperature
+               lp%p(i)%T=Tp
+            end do
+            call lp%sync()
+            ! Get number of particles
+            np=lp%np
             ! Particle volume
             Volp = Pi/6.0_WP*dp**3
             ! Cylinder volume
             Volc=0.25_WP*Pi*D**2*(lp%cfg%xL-2.0_WP*x0)
-            ! Get number of particles
-            np=int(VFavg*Volc/Volp)
-            call lp%resize(np)
-            ! Distribute particles
-            VFavg=0.0_WP
-            do i=1,np
-               ! Give position
-               remove=.true.
-               do while (remove)
-                  lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin)+x0,lp%cfg%x(lp%cfg%imax+1)-x0),&
-                       &       random_uniform(lp%cfg%y(lp%cfg%jmin),lp%cfg%y(lp%cfg%jmax+1)),&
-                       &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
-                  if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
-                  if (sqrt(sum(lp%p(i)%pos(2:3)**2)).lt.0.5*D) remove=.false.
+            VFavg=np*Volp/Volc
+         else
+            ! Root process initializes particles uniformly
+            if (lp%cfg%amRoot) then
+               ! Particle volume
+               Volp = Pi/6.0_WP*dp**3
+               ! Cylinder volume
+               Volc=0.25_WP*Pi*D**2*(lp%cfg%xL-2.0_WP*x0)
+               ! Get number of particles
+               np=int(VFavg*Volc/Volp)
+               call lp%resize(np)
+               ! Distribute particles
+               VFavg=0.0_WP
+               do i=1,np
+                  ! Give position
+                  remove=.true.
+                  do while (remove)
+                     lp%p(i)%pos=[random_uniform(lp%cfg%x(lp%cfg%imin)+x0,lp%cfg%x(lp%cfg%imax+1)-x0),&
+                          &       random_uniform(lp%cfg%y(lp%cfg%jmin),lp%cfg%y(lp%cfg%jmax+1)),&
+                          &       random_uniform(lp%cfg%z(lp%cfg%kmin),lp%cfg%z(lp%cfg%kmax+1))]
+                     if (lp%cfg%nz.eq.1) lp%p(i)%pos(3)=0.0_WP
+                     if (sqrt(sum(lp%p(i)%pos(2:3)**2)).lt.0.5*D) remove=.false.
+                  end do
+                  ! Give id (fixed)
+                  lp%p(i)%id=-1
+                  ! Set the diameter
+                  lp%p(i)%d=dp
+                  ! Set the temperature
+                  lp%p(i)%T=Tp
+                  ! Give zero mass of adsorbed CO2
+                  lp%p(i)%Mc=0.0_WP
+                  lp%p(i)%MacroCO2=0.0_WP
+                  ! Give zero velocity
+                  lp%p(i)%vel=0.0_WP
+                  ! Give zero dt
+                  lp%p(i)%dt=0.0_WP
+                  ! Locate the particle on the mesh
+                  lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
+                  ! Activate the particle
+                  lp%p(i)%flag=0
+                  ! Sum up volume
+                  VFavg=VFavg+Pi*lp%p(i)%d**3/6.0_WP
                end do
-               ! Give id (fixed)
-               lp%p(i)%id=-1
-               ! Set the diameter
-               lp%p(i)%d=dp
-               ! Set the temperature
-               lp%p(i)%T=Tp
-               ! Give zero mass of adsorbed CO2
-               lp%p(i)%Mc=0.0_WP
-               lp%p(i)%MacroCO2=0.0_WP
-               ! Give zero velocity
-               lp%p(i)%vel=0.0_WP
-               ! Give zero dt
-               lp%p(i)%dt=0.0_WP
-               ! Locate the particle on the mesh
-               lp%p(i)%ind=lp%cfg%get_ijk_global(lp%p(i)%pos,[lp%cfg%imin,lp%cfg%jmin,lp%cfg%kmin])
-               ! Activate the particle
-               lp%p(i)%flag=0
-               ! Sum up volume
-               VFavg=VFavg+Pi*lp%p(i)%d**3/6.0_WP
-            end do
-            VFavg=VFavg/Volc
+               VFavg=VFavg/Volc
+            end if
          end if
       end if
       call lp%sync()
 
       ! Get initial particle volume fraction
       call lp%update_VF()
-      !call lp%update_VFIB(Gib=cfg%Gib,Nxib=cfg%Nib(1,:,:,:),Nyib=cfg%Nib(2,:,:,:),Nzib=cfg%Nib(3,:,:,:))
       if (lp%cfg%amRoot) then
          print*,"===== Particle Setup Description ====="
          print*,'Number of particles', np
@@ -426,16 +484,24 @@ contains
       ! Assign values
       sc(ind_T)%SC=SC0(ind_T)
       sc(ind_CO2)%SC=SC0(ind_CO2)
-      do ii=1,nscalar
-         ! Initialize the scalars at the inlet
-         call sc(ii)%get_bcond('inflow',mybc)
-         do n=1,mybc%itr%no_
-            i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-            sc(ii)%SC(i,j,k)=SCin(ii)
+      if (restarted) then
+         call df%pullvar(name='Temp',var=sc(ind_T)%SC)
+         call df%pullvar(name='CO2',var=sc(ind_CO2)%SC)
+      else
+         sc(ind_T)%SC=SC0(ind_T)
+         sc(ind_CO2)%SC=SC0(ind_CO2)
+      
+         do ii=1,nscalar
+            ! Initialize the scalars at the inlet
+            call sc(ii)%get_bcond('inflow',mybc)
+            do n=1,mybc%itr%no_
+               i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+               sc(ii)%SC(i,j,k)=SCin(ii)
+            end do
+            ! Apply all other boundary conditions
+            call sc(ii)%apply_bcond(time%t,time%dt)
          end do
-         ! Apply all other boundary conditions
-         call sc(ii)%apply_bcond(time%t,time%dt)
-      end do
+      end if
       ! Select inert gas 
       select case(trim(lp%inert_gas))
       case('Helium','helium','HELIUM')
@@ -454,6 +520,7 @@ contains
 
     ! Initialize our velocity field
     initialize_velocity: block
+      use mathtools, only: Pi
       integer :: n,i,j,k
       ! Set density
       fs%rho=sc(1)%rho
@@ -461,7 +528,14 @@ contains
       ! Read inlet velocity
       call param_read('Inlet velocity',Uin)
       ! Set uniform momentum and velocity
-      fs%U=Uin; fs%V=0.0_WP; fs%W=0.0_WP
+      if (restarted) then
+         call df%pullvar(name='U',var=fs%U)
+         call df%pullvar(name='V',var=fs%V)
+         call df%pullvar(name='W',var=fs%W)
+      else
+         Uin=Uin*Pi*D**2/4.0_WP/(lp%cfg%yL**2)
+         fs%U=Uin; fs%V=0.0_WP; fs%W=0.0_WP
+      end if
       call fs%rho_multiply()
       call fs%interp_vel(Ui,Vi,Wi)
       resSC=0.0_WP
@@ -491,7 +565,8 @@ contains
       call ens_out%add_vector('velocity',Ui,Vi,Wi)
       call ens_out%add_scalar('divergence',fs%div)
       call ens_out%add_scalar('levelset',cfg%Gib)
-      call ens_out%add_scalar('density',rhof)
+      !call ens_out%add_scalar('density',rhof)
+      call ens_out%add_scalar('density',fs%rho)
       call ens_out%add_scalar('pressure',fs%P)
       call ens_out%add_scalar('temperature',sc(ind_T)%SC)
       call ens_out%add_scalar('CO2',sc(ind_CO2)%SC)
@@ -499,7 +574,8 @@ contains
       call ens_out%add_scalar('diffusivity',sc(ind_T)%diff)
       call ens_out%add_scalar('epsp',lp%VF)
       call ens_out%add_scalar('ghostpoints',ghost)
-      call ens_out%add_scalar('srcU',srcUlp)
+      call ens_out%add_scalar('ptke',lp%ptke)
+      call ens_out%add_scalar('diff_pt',lp%diff_pt)
       ! Output to ensight
       if (ens_evt%occurs()) call ens_out%write_data(time%t)
     end block create_ensight
@@ -616,7 +692,6 @@ contains
             call lp%advance(dt=mydt,U=fs%U,V=fs%V,W=fs%W,rho=rhof,visc=fs%visc,diff=sc(ind_T)%diff,&
                  stress_x=resU,stress_y=resV,stress_z=resW,T=sc(ind_T)%SC,YCO2=sc(ind_CO2)%SC,&
                  srcU=tmp1,srcV=tmp2,srcW=tmp3,srcSC=tmpSC)
-            !call lp%update_VFIB(Gib=cfg%Gib,Nxib=cfg%Nib(1,:,:,:),Nyib=cfg%Nib(2,:,:,:),Nzib=cfg%Nib(3,:,:,:))
             srcUlp=srcUlp+tmp1
             srcVlp=srcVlp+tmp2
             srcWlp=srcWlp+tmp3
@@ -625,13 +700,12 @@ contains
             dt_done=dt_done+mydt
          end do
          ! Compute PTKE and store source terms
-         !call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC(ind_T)%SC,&
-         !     &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%sc,srcU=tmp1,srcV=tmp2,srcW=tmp3,srcT=tmpSC(:,:,:,1),srcY=tmpSC(:,:,:,2))
-         !srcUlp=srcUlp+tmp1; srcVlp=srcVlp+tmp2; srcWlp=srcWlp+tmp3
-         !srcSClp=srcSClp+tmpSC
+         call lp%get_ptke(dt=time%dtmid,Ui=Ui,Vi=Vi,Wi=Wi,visc=fs%visc,rho=rhof,T=SC(ind_T)%SC,&
+             &           diff=sc(ind_T)%diff,Y=SC(ind_CO2)%sc,srcU=tmp1,srcV=tmp2,srcW=tmp3,srcT=tmpSC(:,:,:,1),srcY=tmpSC(:,:,:,2))
+         srcUlp=srcUlp+tmp1; srcVlp=srcVlp+tmp2; srcWlp=srcWlp+tmp3
+         srcSClp=srcSClp+tmpSC
        end block lpt
-       print *, 'a'
-
+       
        ! Remember old scalar
        do ii=1,nscalar
           sc(ii)%rhoold=sc(ii)%rho
@@ -677,13 +751,13 @@ contains
              ! Apply IB forcing to enforce Neumann at the pipe walls
              ibforcing_sc: block
                use gp_class, only: neumann
-               if (ii.eq.ind_T) then
-                  ! Isothermal (T)
-                  sc(ii)%SC=cfg%VF*sc(ii)%SC+(1.0_WP-cfg%VF)*SC0(ind_T)
-               else
+               !if (ii.eq.ind_T) then
+               !   ! Isothermal (T)
+               !   sc(ii)%SC=cfg%VF*sc(ii)%SC+(1.0_WP-cfg%VF)*SC0(ind_T)
+               !else
                   ! Neumann (CO2)
                   call gp%apply_bcond(type=neumann,BP=0.0_WP,A=sc(ii)%SC)
-               end if
+               !end if
              end block ibforcing_sc
 
              ! Apply other boundary conditions on the resulting field
@@ -801,7 +875,7 @@ contains
 
           ! Correct momentum and rebuild velocity
           call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
-          if (modulo(time%n,1000).eq.0) fs%P=0.0_WP
+          !if (modulo(time%n,1000).eq.0) fs%P=0.0_WP
           fs%P=fs%P+fs%psolv%sol
           fs%rhoU=fs%rhoU-time%dtmid*resU
           fs%rhoV=fs%rhoV-time%dtmid*resV
@@ -833,7 +907,7 @@ contains
           end block update_pmesh
           call ens_out%write_data(time%t)
        end if
-
+       
        ! Perform and output monitoring
        call fs%get_max()
        call lp%get_max()
@@ -845,6 +919,26 @@ contains
        call cflfile%write()
        call scfile%write()
        call lptfile%write()
+
+       ! Finally, see if it's time to save restart files
+       if (save_evt%occurs()) then
+          save_restart: block
+            character(len=str_medium) :: timestamp
+            ! Prefix for files
+            write(timestamp,'(es12.5)') time%t
+            ! Populate df and write it
+            call df%pushval(name='t'   ,val=time%t        )
+            call df%pushval(name='dt'  ,val=time%dt       )
+            call df%pushvar(name='U'   ,var=fs%U          )
+            call df%pushvar(name='V'   ,var=fs%V          )
+            call df%pushvar(name='W'   ,var=fs%W          )
+            call df%pushvar(name='Temp',var=sc(ind_T)%SC  )
+            call df%pushvar(name='CO2' ,var=sc(ind_CO2)%SC)
+            call df%write(fdata='restart/data_'//trim(adjustl(timestamp)))
+            ! Write particle file
+            call lp%write(filename='restart/part_'//trim(adjustl(timestamp)))
+          end block save_restart
+       end if
 
     end do
 

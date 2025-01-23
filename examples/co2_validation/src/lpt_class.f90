@@ -160,7 +160,6 @@ module lpt_class
      procedure :: get_max                                !< Extract various monitoring data
      procedure :: get_cfl                                !< Calculate maximum CFL
      procedure :: update_VF                              !< Compute particle volume fraction
-     procedure :: update_VFIB                            !< Correct particle volume fraction for IBs
      procedure :: get_ptke                               !< Compute pseudo-turbulent kinetic energy (and Reynolds stress)
      procedure :: filter                                 !< Apply volume filtering to field
      procedure :: inject                                 !< Inject particles at a prescribed boundary
@@ -481,16 +480,12 @@ contains
           ! Advance with Euler prediction
           call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,diff=diff,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=T,YCO2=YCO2,&
                p=myp,acc=acc,opt_dt=myp%dt,dmdt=dmdt,dcdt=dcdt,dTdt=dTdt,dTdt_r=dTdt_r,fCp=fCp)
-          !myp%pos=pold%pos+0.5_WP*mydt*myp%vel
-          !myp%vel=pold%vel+0.5_WP*mydt*acc
           myp%Mc=pold%Mc+0.5_WP*mydt*dmdt
               myp%MacroCO2=pold%MacroCO2+0.5_WP*mydt*dcdt
           myp%T=pold%T+0.5_WP*mydt*dTdt
           ! Correct with midpoint rule
           call this%get_rhs(U=U,V=V,W=W,rho=rho,visc=visc,diff=diff,stress_x=stress_x,stress_y=stress_y,stress_z=stress_z,T=T,YCO2=YCO2,&
                p=myp,acc=acc,opt_dt=myp%dt,dmdt=dmdt,dcdt=dcdt,dTdt=dTdt,dTdt_r=dTdt_r,fCp=fCp)
-          !myp%pos=pold%pos+mydt*myp%vel
-          !myp%vel=pold%vel+mydt*acc
           myp%Mc=pold%Mc+mydt*dmdt
           myp%MacroCO2=pold%MacroCO2+mydt*dcdt
           myp%T=pold%T+mydt*dTdt
@@ -514,7 +509,7 @@ contains
                     
           ! Get distance to IB and normal
           d12=abs(this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Gib,bc='n'))
-          if (d12.gt.4.0_WP*this%cfg%min_meshsize) cycle
+          if (d12.gt.2.0_WP*this%cfg%min_meshsize) cycle
           n12(1)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nxib,bc='n')
           n12(2)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nyib,bc='n')
           n12(3)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nzib,bc='n')
@@ -813,7 +808,7 @@ contains
 
          ! Knudsen diffusivity
          d_p=1.5e-6_WP !m
-         D_k=d_p/3.0_WP*(8.0_WP*Rcst*p%T/(Pi*W_CO2))**(1.0_WP/2.0_WP)
+         D_k=d_p/3.0_WP*(8.0_WP*Rcst*p%T/(Pi*W_CO2))**(0.5_WP)
          
          ! Effective diffusivity in the pores
          eps_p=0.3_WP !Assumed
@@ -867,7 +862,7 @@ contains
 
          ! Knudsen diffusivity
          d_p=1.5e-6_WP !m
-         D_k=d_p/3.0_WP*(8.0_WP*Rcst*p%T/(Pi*W_CO2))**(1.0_WP/2.0_WP)
+         D_k=d_p/3.0_WP*(8.0_WP*Rcst*p%T/(Pi*W_CO2))**(0.5_WP)
          
          ! Effective diffusivity
          eps_p=0.3_WP 
@@ -876,7 +871,7 @@ contains
          mc_clip=max(p%mc,0.0_WP)
 
          !Estimate k_ldf
-         k_ldf=15.0_WP*D_e/((p%d/2)**2.0_WP)*PCO2_clip/(Rcst*fT)/(qs*this%rho)
+         k_ldf=15.0_WP*D_e/((p%d/2.0_WP)**2)*PCO2_clip/(Rcst*fT)/(qs*this%rho)
          dmdt=k_ldf*(mc_s-mc_clip)
 
          ! Heat of adsorption
@@ -971,7 +966,7 @@ contains
        call this%cfg%set_scalar(Sp=Vp,pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%VF,bc='n')
        ! Get distance to IB and normal
        d12=abs(this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Gib,bc='n'))
-       if (d12.gt.4.0_WP*this%cfg%min_meshsize) cycle
+       if (d12.gt.2.0_WP*this%cfg%min_meshsize) cycle
        n12(1)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nxib,bc='n')
        n12(2)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nyib,bc='n')
        n12(3)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=this%Nzib,bc='n')
@@ -988,51 +983,6 @@ contains
     ! Apply volume filter
     call this%filter(this%VF)
   end subroutine update_VF
-
-  !> Update particle volume fraction using image particles to enforce Neumann across IB
-  subroutine update_VFIB(this,Gib,Nxib,Nyib,Nzib)
-    use mathtools, only: Pi
-    implicit none
-    class(lpt), intent(inout) :: this
-    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Gib  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Nxib !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Nyib !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(inout) :: Nzib !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
-    integer :: i
-    real(WP) :: Vp,d12,buf
-    integer, dimension(3) :: ind
-    real(WP), dimension(3) :: n12,pos
-    real(WP), dimension(:,:,:), allocatable :: VF
-    ! Reset volume fraction
-    allocate(VF(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_));VF=0.0_WP
-    !Transfer particle volume
-    do i=1,this%np_
-       ! Skip inactive particle
-       if (this%p(i)%flag.eq.1.or.this%p(i)%id.eq.0) cycle
-       ! Get distance to IB and normal
-       d12=abs(this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=Gib,bc='n'))
-       if (d12.gt.4.0_WP*this%cfg%min_meshsize) cycle
-       n12(1)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=Nxib,bc='n')
-       n12(2)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=Nyib,bc='n')
-       n12(3)=this%cfg%get_scalar(pos=this%p(i)%pos,i0=this%p(i)%ind(1),j0=this%p(i)%ind(2),k0=this%p(i)%ind(3),S=Nzib,bc='n')
-       buf = sqrt(sum(n12*n12))+epsilon(1.0_WP)
-       n12 = -n12/buf
-       ! Get location of image particle
-       pos=this%p(i)%pos+2.0_WP*d12*n12
-       ind=this%cfg%get_ijk_global(pos,this%p(i)%ind)
-       ! Transfer image particle volume
-       Vp=Pi/6.0_WP*this%p(i)%d**3
-       call this%cfg%set_scalar(Sp=Vp,pos=pos,i0=ind(1),j0=ind(2),k0=ind(3),S=VF,bc='n')
-    end do
-    VF=VF/this%cfg%vol
-    ! Sum at boundaries
-    call this%cfg%syncsum(VF)
-    ! Apply volume filter
-    call this%filter(VF)
-    this%VF=this%VF+VF
-    ! Clean up
-    deallocate(VF)
-  end subroutine update_VFIB
 
   !> Compute pseudo-turbulent kinetic energy and Reynolds stresses
   !> Mehrabadi et al. (2015) "Pseudo-turbulent gas-phase velocity 

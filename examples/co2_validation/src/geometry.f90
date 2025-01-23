@@ -39,7 +39,7 @@ contains
          call param_read('nz',nz); allocate(z(nz+1))
          
          dx=Lx/real(nx,WP)
-         no=8
+         no=4
          if (ny.gt.1) then
             Ly=D+real(2*no,WP)*D/real(ny-2*no,WP)
          else
@@ -63,7 +63,7 @@ contains
          end do
          
          ! General serial grid object
-         grid=sgrid(coord=cartesian,no=2,x=x,y=y,z=z,xper=.false.,yper=.true.,zper=.true.,name='pipe')
+         grid=sgrid(coord=cartesian,no=4,x=x,y=y,z=z,xper=.false.,yper=.true.,zper=.true.,name='pipe')
          
       end block create_grid
          
@@ -120,7 +120,7 @@ contains
          ! Get normal vector
          call cfg%calculate_normal()
          ! Get VF field
-         call cfg%calculate_vf(method=sharp,allow_zero_vf=.false.)
+         call cfg%calculate_vf(method=bigot,allow_zero_vf=.false.)
       end block create_walls
       
       
