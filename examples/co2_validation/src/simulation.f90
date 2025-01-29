@@ -106,7 +106,6 @@ contains
        co2_out=buf1/buf2
     end if
     call MPI_BCAST(co2_out,1,MPI_REAL_WP,rank_out,cfg%comm,ierr)
-    print *, co2_out
   end subroutine outlet_conc
 
 
@@ -531,26 +530,23 @@ contains
       call param_read('Inlet T',SCin(ind_T))
       call param_read('Inlet CO2',SCin(ind_CO2))
       ! Assign values
-      sc(ind_T)%SC=SC0(ind_T)
-      sc(ind_CO2)%SC=SC0(ind_CO2)
       if (restarted) then
          call df%pullvar(name='Temp',var=sc(ind_T)%SC)
          call df%pullvar(name='CO2',var=sc(ind_CO2)%SC)
       else
          sc(ind_T)%SC=SC0(ind_T)
          sc(ind_CO2)%SC=SC0(ind_CO2)
-      
-         do ii=1,nscalar
-            ! Initialize the scalars at the inlet
-            call sc(ii)%get_bcond('inflow',mybc)
-            do n=1,mybc%itr%no_
-               i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-               sc(ii)%SC(i,j,k)=SCin(ii)
-            end do
-            ! Apply all other boundary conditions
-            call sc(ii)%apply_bcond(time%t,time%dt)
-         end do
       end if
+      do ii=1,nscalar
+         ! Initialize the scalars at the inlet
+         call sc(ii)%get_bcond('inflow',mybc)
+         do n=1,mybc%itr%no_
+            i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+            sc(ii)%SC(i,j,k)=SCin(ii)
+         end do
+         ! Apply all other boundary conditions
+         call sc(ii)%apply_bcond(time%t,time%dt)
+      end do
       ! Select inert gas 
       select case(trim(lp%inert_gas))
       case('Helium','helium','HELIUM')
@@ -577,12 +573,12 @@ contains
       ! Read inlet velocity
       call param_read('Inlet velocity',Uin)
       ! Set uniform momentum and velocity
+      Uin=Uin*Pi*D**2/4.0_WP/(lp%cfg%yL**2)
       if (restarted) then
          call df%pullvar(name='U',var=fs%U)
          call df%pullvar(name='V',var=fs%V)
          call df%pullvar(name='W',var=fs%W)
       else
-         Uin=Uin*Pi*D**2/4.0_WP/(lp%cfg%yL**2)
          fs%U=Uin; fs%V=0.0_WP; fs%W=0.0_WP
       end if
       call fs%rho_multiply()
