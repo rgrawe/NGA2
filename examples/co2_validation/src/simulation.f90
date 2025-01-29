@@ -75,7 +75,39 @@ module simulation
   !> Max timestep size for LPT
   real(WP) :: lp_dt,lp_dt_max
 
+  !> Outlet Variables
+  logical :: compute_out
+  integer :: i_out,rank_out
+  real(WP) :: co2_out
+
 contains
+
+  subroutine outlet_conc()
+    use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_BCAST
+    use parallel,  only: MPI_REAL_WP
+    implicit none
+    integer :: j,k,ierr
+    real(WP) :: buf1,buf2,buf1_,buf2_
+
+    ! Leave if processor doesn't contain outlet
+    
+    if (compute_out) then
+       ! Sum up over y and z
+       buf1_=0.0_WP; buf2_=0.0_WP
+       do k=cfg%kmin_,cfg%kmax_
+          do j=cfg%jmin_,cfg%jmax_
+             buf1_=buf1_+sc(ind_CO2)%rho(i_out,j,k)*sc(ind_co2)%sc(i_out,j,k)/W_CO2*cfg%VF(i_out,j,k)*cfg%dy(j)*cfg%dz(k)
+             buf2_=buf2_+(1.0_WP-lp%VF(i_out,j,k))*cfg%VF(i_out,j,k)*cfg%dy(j)*cfg%dz(k)
+          end do
+       end do
+       ! All-reduce the data
+       call MPI_ALLREDUCE(buf1_,buf1,1,MPI_REAL_WP,MPI_SUM,fs%cfg%yzcomm,ierr)
+       call MPI_ALLREDUCE(buf2_,buf2,1,MPI_REAL_WP,MPI_SUM,fs%cfg%yzcomm,ierr)
+       co2_out=buf1/buf2
+    end if
+    call MPI_BCAST(co2_out,1,MPI_REAL_WP,rank_out,cfg%comm,ierr)
+    print *, co2_out
+  end subroutine outlet_conc
 
 
   !> Define here our equation of state - rho(P,T,Yk)
@@ -282,7 +314,9 @@ contains
     ! Create scalar solvers for T and CO2
     create_scalar: block
       use vdscalar_class, only: bcond,quick,dirichlet,neumann
-      integer :: ii
+      use mpi_f08,   only: MPI_ALLREDUCE,MPI_MIN,MPI_INTEGER
+      integer :: i,ii,ierr
+      real(WP) :: x0,x
       ! Create scalar solvers
       sc(ind_T)  =vdscalar(cfg=cfg,scheme=quick,name='T')
       sc(ind_CO2)=vdscalar(cfg=cfg,scheme=quick,name='CO2')
@@ -296,6 +330,21 @@ contains
          ss(ii)=ddadi(cfg=cfg,name='Scalar',nst=13)
          call sc(ii)%setup(implicit_solver=ss(ii))
       end do
+      ! Get index associated with outlet
+      call param_read('x0',x0)
+      x=cfg%xL-x0
+      i_out=0
+      rank_out=huge(1)
+      compute_out=.false.
+      if (cfg%xm(cfg%imin_).le.x.and.cfg%xm(cfg%imax_).ge.x) then
+         compute_out=.true.
+         rank_out=cfg%rank
+         do i=cfg%imin_,cfg%imax_
+            if (cfg%xm(i).gt.x) exit
+         end do
+         i_out=i-1
+      end if
+      call MPI_ALLREDUCE(rank_out,i,1,MPI_INTEGER,MPI_MIN,fs%cfg%comm,ierr); rank_out=i
     end block create_scalar
 
 
@@ -565,8 +614,7 @@ contains
       call ens_out%add_vector('velocity',Ui,Vi,Wi)
       call ens_out%add_scalar('divergence',fs%div)
       call ens_out%add_scalar('levelset',cfg%Gib)
-      !call ens_out%add_scalar('density',rhof)
-      call ens_out%add_scalar('density',fs%rho)
+      call ens_out%add_scalar('density',rhof)
       call ens_out%add_scalar('pressure',fs%P)
       call ens_out%add_scalar('temperature',sc(ind_T)%SC)
       call ens_out%add_scalar('CO2',sc(ind_CO2)%SC)
@@ -587,6 +635,7 @@ contains
       integer :: ii
       character(len=str_medium) :: str
       ! Prepare some info about fields
+      call outlet_conc()
       call fs%get_cfl(time%dt,time%cfl)
       call fs%get_max()
       call lp%get_max()
@@ -638,6 +687,7 @@ contains
          str=trim(sc(ii)%name)//'int'
          call scfile%add_column(sc(ii)%SCint,trim(str))
       end do
+      call scfile%add_column(co2_out,'Outlet CO2')
       call scfile%write()
       ! Create LPT monitor
       lptfile=monitor(amroot=lp%cfg%amRoot,name='lpt')
@@ -909,6 +959,7 @@ contains
        end if
        
        ! Perform and output monitoring
+       call outlet_conc()
        call fs%get_max()
        call lp%get_max()
        do ii=1,nscalar
